@@ -83,7 +83,7 @@ func TestRunDANEClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v\nstderr: %s", err, errb.String())
 	}
-	for _, want := range []string{"dane_clientid_requested: true", "authenticated: yes", "tls_version: TLS 1.3", "server_auth: insecure ok", "200 OK"} {
+	for _, want := range []string{"dane_clientid_requested: true", "authenticated: yes", "tls_version: TLS 1.3", "server_auth: insecure (not verified)", "200 OK"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output lacks %q:\n%s", want, out.String())
 		}
@@ -136,5 +136,44 @@ func TestParseTarget(t *testing.T) {
 		if _, _, _, err := parseTarget(raw); err == nil {
 			t.Errorf("%s accepted", raw)
 		}
+	}
+}
+
+// A rejected client still prints the TLS state of its connection (TLS 1.3
+// delivers the server's alert after the client handshake).
+func TestRunRejectedPrintsState(t *testing.T) {
+	dnsSrv := danetest.NewDNSServer(t) // no TLSA record: lookup fails, Required aborts
+	cx, ck := danetest.NewSelfSigned(t, danetest.CertOpts{DNSNames: []string{clientName}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}})
+	sx, sk := danetest.NewSelfSigned(t, danetest.CertOpts{DNSNames: []string{"localhost"}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}})
+	s, err := daneauth.NewServer(daneauth.ServerOptions{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{sx.Raw}, PrivateKey: sk, Leaf: sx}},
+		Resolver:     dane.NewResolver(dnsSrv.Addr),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := s.HTTPServer(http.NewServeMux())
+	done := make(chan struct{})
+	go func() { srv.Serve(s.NewListener(ln)); close(done) }()
+	t.Cleanup(func() { srv.Close(); <-done })
+
+	cf, kf := writePEM(t, t.TempDir(), cx, ck)
+	url := "https://localhost:" + fmt.Sprint(ln.Addr().(*net.TCPAddr).Port) + "/"
+	var out, errb bytes.Buffer
+	err = run([]string{"-cert", cf, "-key", kf, "-name", clientName, "-server-auth", "insecure", url}, &out, &errb)
+	if err == nil {
+		t.Fatalf("run succeeded:\n%s", out.String())
+	}
+	for _, want := range []string{"tls_version: TLS 1.3", "dane_clientid_requested: true"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if !strings.Contains(errb.String(), "server sent TLS alert") {
+		t.Errorf("stderr lacks alert line: %q", errb.String())
 	}
 }

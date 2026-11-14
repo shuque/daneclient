@@ -44,8 +44,9 @@ Then:
     bin/danecert ee -name dev1._device.example.com -out ee
 
 Publish the printed `TLSA 3 1 1` line in a DNSSEC-signed zone, then run the
-server (needs a certificate and key, and a DNSSEC-validating resolver) and
-the client:
+server (needs a certificate and key, and a DNSSEC-validating resolver; a
+throwaway `server.crt`/`server.key` is made by the `openssl` command in
+[docs/testing.md](docs/testing.md)) and the client:
 
     bin/daneserver -cert server.crt -key server.key -resolver 127.0.0.1:53
     bin/daneclient -cafile server.crt -cert ee/client.crt -key ee/client.key \

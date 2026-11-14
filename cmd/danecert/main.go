@@ -74,6 +74,13 @@ func run(args []string, stdout io.Writer) error {
 	if *out == "" || (name != nil && *name == "") || (cn != nil && *cn == "") || (caDir != nil && *caDir == "") {
 		return fmt.Errorf("missing required flag\n%s", usage)
 	}
+	if name != nil {
+		n, err := cleanName(*name)
+		if err != nil {
+			return err
+		}
+		*name = n
+	}
 	switch args[0] {
 	case "ee":
 		return genEE(stdout, *name, *out, *force)
@@ -82,6 +89,33 @@ func run(args []string, stdout io.Writer) error {
 	default:
 		return issue(stdout, *caDir, *name, *out, *allowUS, *force)
 	}
+}
+
+// cleanName strips one trailing dot from a ClientName and checks that it is
+// a plausible DNS name: non-empty labels of at most 63 octets from
+// [A-Za-z0-9_-], at most 253 octets overall. (A copy of the rules in
+// daneauth's allowlist validation.)
+func cleanName(name string) (string, error) {
+	n := strings.TrimSuffix(name, ".")
+	ok := n != "" && len(n) <= 253
+	if ok {
+		for _, l := range strings.Split(n, ".") {
+			if l == "" || len(l) > 63 {
+				ok = false
+				break
+			}
+			for i := 0; i < len(l); i++ {
+				c := l[i]
+				if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+					ok = false
+				}
+			}
+		}
+	}
+	if !ok {
+		return "", fmt.Errorf("invalid name %q: labels must be 1-63 octets of [A-Za-z0-9_-], at most 253 octets overall", name)
+	}
+	return n, nil
 }
 
 func hasUnderscoreLabel(name string) bool {
@@ -139,7 +173,7 @@ func genEE(stdout io.Writer, name, out string, force bool) error {
 	if err != nil {
 		return err
 	}
-	if err := writeKeyCert(paths, key, der); err != nil {
+	if err := writeKeyCert(paths, force, key, der); err != nil {
 		return err
 	}
 	cert, err := x509.ParseCertificate(der)
@@ -176,17 +210,13 @@ func genCA(cn, out string, force bool) error {
 	if err != nil {
 		return err
 	}
-	return writeKeyCert(paths, key, der)
+	return writeKeyCert(paths, force, key, der)
 }
 
 func issue(stdout io.Writer, caDir, name, out string, allowUnderscore, force bool) error {
 	if hasUnderscoreLabel(name) && !allowUnderscore {
-		return fmt.Errorf("name %q has a label starting with '_'. RFC 5280 section 4.2.1.6 "+
-			"(preferred name syntax) forbids underscores in a dNSName, and draft section 10 "+
-			"applies. Many toolkits and private CAs will still issue such certificates for "+
-			"DANE-TA, so pass -allow-underscore to do so. Public CAs will not, so use a "+
-			"Format 3 (freeform) name instead. DANE-EE ('danecert ee') has no such "+
-			"restriction, because the name need not appear in the certificate", name)
+		return fmt.Errorf("name %q: RFC 5280 section 4.2.1.6 forbids '_' in dNSName (draft section 10); "+
+			"use DANE-EE (danecert ee), a Format 3 name, or -allow-underscore for a private CA", name)
 	}
 	caCert, err := loadCert(filepath.Join(caDir, "ca.crt"))
 	if err != nil {
@@ -196,7 +226,7 @@ func issue(stdout io.Writer, caDir, name, out string, allowUnderscore, force boo
 	if err != nil {
 		return err
 	}
-	paths, err := prepare(out, force, "client.key", "client.crt")
+	paths, err := prepare(out, force, "client.key", "client.crt", "chain.pem")
 	if err != nil {
 		return err
 	}
@@ -213,10 +243,17 @@ func issue(stdout io.Writer, caDir, name, out string, allowUnderscore, force boo
 	if err != nil {
 		return err
 	}
-	if err := writeKeyCert(paths, key, der); err != nil {
+	if err := writeKeyCert(paths, force, key, der); err != nil {
 		return err
 	}
-	return printTLSA(stdout, name, dane.DANETA, dane.SelectorCert, caCert)
+	if err := writeFile(paths[2], append(certPEM(der), certPEM(caCert.Raw)...), 0o644, force); err != nil {
+		return err
+	}
+	if err := printTLSA(stdout, name, dane.DANETA, dane.SelectorCert, caCert); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(stdout, "hint: use %s as -cert for DANE-TA\n", paths[2])
+	return err
 }
 
 func printTLSA(w io.Writer, name string, u dane.Usage, s dane.Selector, cert *x509.Certificate) error {
@@ -234,10 +271,13 @@ func printTLSA(w io.Writer, name string, u dane.Usage, s dane.Selector, cert *x5
 	return err
 }
 
-// prepare creates dir and returns the paths for the key and cert files,
+// prepare creates dir and returns the paths of the named files in it,
 // refusing to overwrite existing ones unless force is set.
-func prepare(dir string, force bool, keyName, certName string) ([2]string, error) {
-	p := [2]string{filepath.Join(dir, keyName), filepath.Join(dir, certName)}
+func prepare(dir string, force bool, names ...string) ([]string, error) {
+	var p []string
+	for _, n := range names {
+		p = append(p, filepath.Join(dir, n))
+	}
 	if !force {
 		for _, f := range p {
 			if _, err := os.Lstat(f); err == nil {
@@ -248,22 +288,39 @@ func prepare(dir string, force bool, keyName, certName string) ([2]string, error
 	return p, os.MkdirAll(dir, 0o755)
 }
 
-func writeFile(path string, data []byte, mode os.FileMode) error {
-	if err := os.WriteFile(path, data, mode); err != nil {
+// writeFile creates path with mode from the start (O_EXCL: a symlink is
+// not followed, an existing file is an error). With force, an existing
+// file is removed first.
+func writeFile(path string, data []byte, mode os.FileMode, force bool) error {
+	if force {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if err != nil {
 		return err
 	}
-	return os.Chmod(path, mode) // in case the file pre-existed (-force)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
-func writeKeyCert(paths [2]string, key *ecdsa.PrivateKey, certDER []byte) error {
+func certPEM(der []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+func writeKeyCert(paths []string, force bool, key *ecdsa.PrivateKey, certDER []byte) error {
 	kb, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
 		return err
 	}
-	if err := writeFile(paths[0], pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: kb}), 0o600); err != nil {
+	if err := writeFile(paths[0], pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: kb}), 0o600, force); err != nil {
 		return err
 	}
-	return writeFile(paths[1], pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), 0o644)
+	return writeFile(paths[1], certPEM(certDER), 0o644, force)
 }
 
 func loadCert(path string) (*x509.Certificate, error) {

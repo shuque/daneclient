@@ -133,8 +133,24 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	defer tr.CloseIdleConnections()
 
+	// printState prints the TLS state of the captured connection. It runs on
+	// failure too: in TLS 1.3 a server alert arrives only after the client's
+	// handshake, so the state is known even when the request fails.
+	printState := func() {
+		mu.Lock()
+		tc := conn
+		mu.Unlock()
+		if tc != nil {
+			st := tc.ConnectionState()
+			fmt.Fprintf(stdout, "tls_version: %s\n", tls.VersionName(st.Version))
+			fmt.Fprintf(stdout, "cipher_suite: %s\n", tls.CipherSuiteName(st.CipherSuite))
+			fmt.Fprintf(stdout, "dane_clientid_requested: %v\n", st.DANEClientIDRequested)
+		}
+	}
+
 	resp, err := client.Get(u.String())
 	if err != nil {
+		printState()
 		if a, ok := tls.RemoteAlert(err); ok {
 			fmt.Fprintf(stderr, "server sent TLS alert: %v\n", a)
 		}
@@ -142,22 +158,18 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
+	printState()
 	if err != nil {
 		if a, ok := tls.RemoteAlert(err); ok {
 			fmt.Fprintf(stderr, "server sent TLS alert: %v\n", a)
 		}
 		return err
 	}
-	mu.Lock()
-	tc := conn
-	mu.Unlock()
-	if tc != nil {
-		st := tc.ConnectionState()
-		fmt.Fprintf(stdout, "tls_version: %s\n", tls.VersionName(st.Version))
-		fmt.Fprintf(stdout, "cipher_suite: %s\n", tls.CipherSuiteName(st.CipherSuite))
-		fmt.Fprintf(stdout, "dane_clientid_requested: %v\n", st.DANEClientIDRequested)
+	if *mode == "insecure" {
+		fmt.Fprintln(stdout, "server_auth: insecure (not verified)")
+	} else {
+		fmt.Fprintf(stdout, "server_auth: %s ok\n", *mode)
 	}
-	fmt.Fprintf(stdout, "server_auth: %s ok\n", *mode)
 	fmt.Fprintf(stdout, "%s\n\n%s", resp.Status, body)
 	return nil
 }

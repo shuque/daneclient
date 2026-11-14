@@ -30,7 +30,7 @@ publish under.
 ## 1. Generate client material
 
 `danecert` writes `client.key` and `client.crt` (and `ca.key`/`ca.crt` for
-a CA) into the `-out` directory, and prints the TLSA record to publish on
+a CA, and `chain.pem` for `issue`: the leaf followed by the CA) into the `-out` directory, and prints the TLSA record to publish on
 stdout.
 
 DANE-EE (usage 3, self-signed client certificate; the name need not appear
@@ -115,9 +115,8 @@ Client, DANE-EE:
       -name dev1._device.huque.com https://localhost:8443/whoami
 
 Client, DANE-TA: send the leaf and CA in one chain file, since `-cert`
-takes a chain:
+takes a chain. `danecert issue` writes it as `chain.pem`:
 
-    cat ta/client.crt ca/ca.crt > ta/chain.pem
     daneclient -cafile server.crt -cert ta/chain.pem -key ta/client.key \
       -name dev1.dane-test.huque.com https://localhost:8443/whoami
 
@@ -127,12 +126,19 @@ The client prints the TLS version, cipher suite, whether the server sent
 `dane` (TLSA lookup at `_port._tcp.<host>` through `-resolver`) or
 `insecure`.
 
+The server asks for a client certificate (`RequestClientCert`) under both
+policies. A peer that sends no certificate under `required` therefore gets
+`handshake_failure` (40), as draft section 8.2 step 3 requires, not the TLS
+stack's `certificate_required` (116). The CertificateRequest is the same on
+the wire either way.
+
 ### What to expect
 
 - Success: `/whoami` shows `"authenticated": true`, your `client_name`,
   `"reason": "authenticated"`, the TLSA `rrset` and a per-record
   `results` list. A second request within the TLSA TTL shows
-  `"cached": true`. `/private` returns `hello, <name>`.
+  `"cached": true` (its `ttl` is still the record's original TTL).
+  `/private` returns `hello, <name>`.
   With `-v` the server log has `step 1` to `step 5` lines per
   connection ending `authenticated by TLSA 3 1 1`, followed by
   `conn ... client_name="..." reason="authenticated"`.
