@@ -82,7 +82,7 @@ All recorded-transcript tests (`TestHandshakeClient*`,
 
 ## Departures
 
-Beyond the de-internalization above, all in TLS 1.3. The code lives in
+Beyond the de-internalization above, all in TLS 1.3 except the VerifyConnection alert change, which applies to TLS 1.2 too. The code lives in
 `dane.go`; each upstream file has only small hooks.
 
 - Public API: `Config.DANEClientAuth`, `Config.DANEClientName`,
@@ -91,7 +91,8 @@ Beyond the de-internalization above, all in TLS 1.3. The code lives in
   copies both `Config` fields.
 - Server, TLS 1.3, client certificate requested, `DANEClientAuth`: the
   CertificateRequest carries an empty dane_clientid.
-- Server: dane_clientid in a ClientHello is `illegal_parameter`.
+- Server: dane_clientid in a ClientHello, including the second ClientHello
+  after a HelloRetryRequest, is `illegal_parameter`.
 - Server: dane_clientid in the client Certificate when our CertificateRequest
   did not advertise it is `unsupported_extension`; with a zero-length name or
   a name failing `validClientName` it is `handshake_failure`. These checks run
@@ -111,11 +112,16 @@ Beyond the de-internalization above, all in TLS 1.3. The code lives in
 - `VerifyConnection` errors: at every call site (client and server, TLS 1.2
   and 1.3) an error wrapping an `AlertError` (found with
   `errors.AsType[AlertError]`) selects the alert sent; otherwise
-  `bad_certificate` as upstream.
+  `bad_certificate` as upstream. Non-fatal alerts (close_notify,
+  user_canceled, no_renegotiation) are replaced by `bad_certificate`.
 - Unexported test hooks on `Config`: `testingForceDANEExt` (client sends the
   extension on the leaf with exactly `DANEClientName`, even if empty or not
   requested) and `testingDANEInCH` (client adds extension 63 to its
-  ClientHello). Both are copied by `Clone`.
+  ClientHello) and `testingDANEInCH2` (only in the second ClientHello). All
+  are copied by `Clone`.
+
+Modified upstream test: `tls_test.go` `TestCloneNonFuncFields` lists the new
+Config fields (`DANEClientAuth`, `DANEClientName` and the unexported hooks).
 
 ## Known limitations
 

@@ -70,9 +70,15 @@ func readDANEClientName(extData *cryptobyte.String, name *string, emptyOnly bool
 
 // alertFromVerifyErr chooses the alert to send when Config.VerifyConnection
 // fails: the alert wrapped by err (as an AlertError), else bad_certificate.
+// Non-fatal alerts (close_notify, user_canceled, no_renegotiation) are not
+// honoured, so the peer always sees a fatal alert.
 func alertFromVerifyErr(err error) alert {
 	if a, ok := errors.AsType[AlertError](err); ok {
-		return alert(a)
+		switch alert(a) {
+		case alertCloseNotify, alertUserCanceled, alertNoRenegotiation:
+		default:
+			return alert(a)
+		}
 	}
 	return alertBadCertificate
 }

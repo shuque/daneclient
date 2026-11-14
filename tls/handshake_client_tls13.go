@@ -301,6 +301,7 @@ func (hs *clientHandshakeStateTLS13) processHelloRetryRequest() error {
 	if hs.serverHello.cookie != nil {
 		hello.cookie = hs.serverHello.cookie
 	}
+	hello.daneClientIDInCH = c.config.testingDANEInCH2
 
 	if hs.serverHello.serverShare.group != 0 {
 		c.sendAlert(alertDecodeError)

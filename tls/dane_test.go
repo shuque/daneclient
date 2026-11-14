@@ -364,11 +364,15 @@ func TestDANEServerCertCarries63(t *testing.T) {
 	// rejected by the client with unsupported_extension. Exercise the helper
 	// that the client handshake uses.
 	cp, sp := net.Pipe()
-	go io.Copy(io.Discard, sp)
-	defer cp.Close()
+	got := make(chan []byte, 1)
+	go func() { b, _ := io.ReadAll(sp); got <- b }()
 	c := Client(cp, &Config{})
 	if err := c.checkDANEServerCert(&certificateMsgTLS13{daneClientID: true}); err == nil {
 		t.Fatal("no error for dane_clientid in server Certificate")
+	}
+	cp.Close()
+	if b := <-got; len(b) < 7 || b[0] != byte(recordTypeAlert) || b[len(b)-2] != alertLevelError || b[len(b)-1] != byte(alertUnsupportedExtension) {
+		t.Fatalf("alert 110 not sent: %x", b)
 	}
 	if err := c.checkDANEServerCert(&certificateMsgTLS13{}); err != nil {
 		t.Fatal(err)
@@ -377,26 +381,83 @@ func TestDANEServerCertCarries63(t *testing.T) {
 
 func TestVerifyConnectionAlertError(t *testing.T) {
 	for _, tc := range []struct {
-		err  error
-		want alert
+		name   string
+		err    error
+		want   alert
+		client bool // VerifyConnection on the client; the server sees the alert
+		tls12  bool
 	}{
-		{fmt.Errorf("no: %w", AlertError(alertHandshakeFailure)), alertHandshakeFailure},
-		{errors.New("no"), alertBadCertificate},
+		{name: "server alert", err: fmt.Errorf("no: %w", AlertError(alertHandshakeFailure)), want: alertHandshakeFailure},
+		{name: "server plain", err: errors.New("no"), want: alertBadCertificate},
+		{name: "server close_notify", err: AlertError(alertCloseNotify), want: alertBadCertificate},
+		{name: "server user_canceled", err: AlertError(alertUserCanceled), want: alertBadCertificate},
+		{name: "server no_renegotiation", err: AlertError(alertNoRenegotiation), want: alertBadCertificate},
+		{name: "client alert", err: AlertError(alertHandshakeFailure), want: alertHandshakeFailure, client: true},
+		{name: "tls12 server alert", err: AlertError(alertHandshakeFailure), want: alertHandshakeFailure, tls12: true},
 	} {
-		cli, srv := daneConfigs(t)
-		srv.VerifyConnection = func(ConnectionState) error { return tc.err }
-		r := runDANE(t, cli, srv)
-		if r.serverErr == nil {
-			t.Fatal("server accepted")
-		}
-		wantAlert(t, r.clientErr, tc.want)
+		t.Run(tc.name, func(t *testing.T) {
+			cli, srv := daneConfigs(t)
+			if tc.tls12 {
+				cli.MinVersion, cli.MaxVersion = VersionTLS12, VersionTLS12
+				srv.MinVersion, srv.MaxVersion = VersionTLS12, VersionTLS12
+			}
+			fail := func(ConnectionState) error { return tc.err }
+			if tc.client {
+				cli.VerifyConnection = fail
+			} else {
+				srv.VerifyConnection = fail
+			}
+			r := runDANE(t, cli, srv)
+			if tc.client {
+				if r.clientErr == nil {
+					t.Fatal("client accepted")
+				}
+				wantAlert(t, r.serverErr, tc.want)
+				return
+			}
+			if r.serverErr == nil {
+				t.Fatal("server accepted")
+			}
+			wantAlert(t, r.clientErr, tc.want)
+		})
+	}
+}
+
+func TestDANEInSecondClientHello(t *testing.T) {
+	cli, srv := daneConfigs(t)
+	// Force a HelloRetryRequest: the client's first key share is not
+	// acceptable to the server.
+	cli.CurvePreferences = []CurveID{CurveP256, CurveP384}
+	srv.CurvePreferences = []CurveID{CurveP384}
+	r := runDANE(t, cli, srv)
+	if r.serverErr != nil || r.clientErr != nil || !r.serverState.HelloRetryRequest {
+		t.Fatalf("baseline: HRR %v, server %v, client %v", r.serverState.HelloRetryRequest, r.serverErr, r.clientErr)
+	}
+	cli.testingDANEInCH2 = true
+	r = runDANE(t, cli, srv)
+	if r.serverErr == nil {
+		t.Fatal("server accepted dane_clientid in second ClientHello")
+	}
+	wantAlert(t, r.clientErr, alertIllegalParameter)
+}
+
+func TestDANESetClientIDEmptyCert(t *testing.T) {
+	m := &certificateMsgTLS13{}
+	m.setDANEClientID(&Config{DANEClientName: "dev1._device.example.com"}, true)
+	if m.daneClientID {
+		t.Fatal("extension set on empty Certificate")
+	}
+	m.certificate.Certificate = [][]byte{{1}}
+	m.setDANEClientID(&Config{DANEClientName: "dev1._device.example.com"}, true)
+	if !m.daneClientID || m.daneClientName != "dev1._device.example.com" {
+		t.Fatalf("extension not set: %+v", m)
 	}
 }
 
 func TestDANEConfigClone(t *testing.T) {
-	c := &Config{DANEClientAuth: true, DANEClientName: "x._y.example.com", testingForceDANEExt: true, testingDANEInCH: true}
+	c := &Config{DANEClientAuth: true, DANEClientName: "x._y.example.com", testingForceDANEExt: true, testingDANEInCH: true, testingDANEInCH2: true}
 	d := c.Clone()
-	if !d.DANEClientAuth || d.DANEClientName != c.DANEClientName || !d.testingForceDANEExt || !d.testingDANEInCH {
+	if !d.DANEClientAuth || d.DANEClientName != c.DANEClientName || !d.testingForceDANEExt || !d.testingDANEInCH || !d.testingDANEInCH2 {
 		t.Fatalf("clone lost fields: %+v", d)
 	}
 }

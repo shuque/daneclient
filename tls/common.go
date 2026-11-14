@@ -700,6 +700,9 @@ type Config struct {
 	// considering this callback. This callback will run for all connections,
 	// including resumptions, regardless of InsecureSkipVerify or ClientAuth
 	// settings.
+	//
+	// An error that wraps an [AlertError] selects the alert sent to the peer;
+	// non-fatal alerts are replaced by bad_certificate.
 	VerifyConnection func(ConnectionState) error
 
 	// DANEClientAuth, if set on a server that requests a client certificate
@@ -726,6 +729,7 @@ type Config struct {
 	// client add dane_clientid to its ClientHello.
 	testingForceDANEExt bool
 	testingDANEInCH     bool
+	testingDANEInCH2    bool // like testingDANEInCH, but only in the second ClientHello (after HRR)
 
 	// RootCAs defines the set of root certificate authorities
 	// that clients use when verifying server certificates.
@@ -1063,6 +1067,7 @@ func (c *Config) Clone() *Config {
 		DANEClientName:                      c.DANEClientName,
 		testingForceDANEExt:                 c.testingForceDANEExt,
 		testingDANEInCH:                     c.testingDANEInCH,
+		testingDANEInCH2:                    c.testingDANEInCH2,
 		RootCAs:                             c.RootCAs,
 		NextProtos:                          c.NextProtos,
 		ServerName:                          c.ServerName,
