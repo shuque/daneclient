@@ -7,12 +7,13 @@ package tls
 import (
 	"crypto"
 	"crypto/fips140"
-	"crypto/internal/cryptotest"
 	"crypto/mldsa"
-	"crypto/tls/internal/fips140tls"
-	"internal/testenv"
 	"strconv"
 	"testing"
+
+	"github.com/shuque/daneclient/tls/internal/cryptotest"
+	"github.com/shuque/daneclient/tls/internal/fips140tls"
+	"github.com/shuque/daneclient/tls/internal/testenv"
 )
 
 func TestSignatureSelection(t *testing.T) {

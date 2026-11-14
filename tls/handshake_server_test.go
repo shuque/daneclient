@@ -10,15 +10,12 @@ import (
 	"crypto"
 	"crypto/ecdh"
 	"crypto/elliptic"
-	internalrand "crypto/internal/rand"
 	"crypto/rand"
-	"crypto/tls/internal/fips140tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"internal/testenv"
 	"io"
 	"net"
 	"os"
@@ -30,6 +27,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/shuque/daneclient/tls/internal/fips140tls"
+	"github.com/shuque/daneclient/tls/internal/testenv"
 )
 
 func testClientHello(t *testing.T, serverConfig *Config, m handshakeMessage) {
@@ -1416,9 +1416,10 @@ func (zeroSource) Read(b []byte) (n int, err error) {
 func benchmarkHandshakeServer(b *testing.B, version uint16, cipherSuite uint16, curve CurveID, cert []byte, key crypto.PrivateKey) {
 	config := testConfigServer.Clone()
 
-	// cryptotest.SetGlobalRandom does not support *testing.B
-	internalrand.SetTestingReader(zeroSource{})
-	defer internalrand.SetTestingReader(nil)
+	// cryptotest.SetGlobalRandom does not support *testing.B, and the
+	// crypto/internal/rand.SetTestingReader hook used upstream is not
+	// reachable from outside GOROOT.
+	b.Skip("daneclient tls fork: cannot install a deterministic crypto/rand source in benchmarks")
 
 	config.CipherSuites = []uint16{cipherSuite}
 	config.CurvePreferences = []CurveID{curve}

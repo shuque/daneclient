@@ -10,20 +10,18 @@ import (
 	"crypto/cipher"
 	"crypto/des"
 	"crypto/hmac"
-	"crypto/internal/boring"
-	fipsaes "crypto/internal/fips140/aes"
-	"crypto/internal/fips140/aes/gcm"
 	"crypto/rc4"
 	"crypto/sha1"
 	"crypto/sha256"
 	_ "crypto/sha512" // for crypto.SHA384
 	"fmt"
 	"hash"
-	"internal/cpu"
 	"runtime"
-	_ "unsafe" // for linkname
 
+	"github.com/shuque/daneclient/tls/internal/boring"
+	"github.com/shuque/daneclient/tls/internal/gcm"
 	"golang.org/x/crypto/chacha20poly1305"
+	cpu "golang.org/x/sys/cpu"
 )
 
 // CipherSuite is a TLS cipher suite. Note that most functions in this package
@@ -209,8 +207,6 @@ type cipherSuiteTLS13 struct {
 //
 // Do not remove or change the type signature.
 // See go.dev/issue/67401.
-//
-//go:linkname cipherSuitesTLS13
 var cipherSuitesTLS13 = []*cipherSuiteTLS13{ // TODO: replace with a map.
 	{TLS_AES_128_GCM_SHA256, 16, aeadAESGCMTLS13, crypto.SHA256},
 	{TLS_CHACHA20_POLY1305_SHA256, 32, aeadChaCha20Poly1305, crypto.SHA256},
@@ -519,7 +515,7 @@ func aeadAESGCM(key, noncePrefix []byte) aead {
 		aead, err = boring.NewGCMTLS(aes)
 	} else {
 		boring.Unreachable()
-		aead, err = gcm.NewGCMForTLS12(aes.(*fipsaes.Block))
+		aead, err = gcm.NewGCMForTLS12(aes)
 	}
 	if err != nil {
 		panic(err)
@@ -538,8 +534,6 @@ func aeadAESGCM(key, noncePrefix []byte) aead {
 //
 // Do not remove or change the type signature.
 // See go.dev/issue/67401.
-//
-//go:linkname aeadAESGCMTLS13
 func aeadAESGCMTLS13(key, nonceMask []byte) aead {
 	if len(nonceMask) != aeadNonceLength {
 		panic("tls: internal error: wrong nonce length")
@@ -553,7 +547,7 @@ func aeadAESGCMTLS13(key, nonceMask []byte) aead {
 		aead, err = boring.NewGCMTLS13(aes)
 	} else {
 		boring.Unreachable()
-		aead, err = gcm.NewGCMForTLS13(aes.(*fipsaes.Block))
+		aead, err = gcm.NewGCMForTLS13(aes)
 	}
 	if err != nil {
 		panic(err)

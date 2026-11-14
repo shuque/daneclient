@@ -11,22 +11,23 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/hpke"
-	"crypto/internal/fips140/tls13"
 	"crypto/mldsa"
 	"crypto/rsa"
 	"crypto/subtle"
-	"crypto/tls/internal/fips140tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
 	"hash"
-	"internal/godebug"
 	"io"
 	"net"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/shuque/daneclient/tls/internal/fips140tls"
+	"github.com/shuque/daneclient/tls/internal/godebug"
+	"github.com/shuque/daneclient/tls/internal/tls13"
 )
 
 type clientHandshakeState struct {

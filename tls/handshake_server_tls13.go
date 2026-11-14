@@ -11,18 +11,19 @@ import (
 	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/hpke"
-	"crypto/internal/fips140/tls13"
 	"crypto/rsa"
-	"crypto/tls/internal/fips140tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
 	"hash"
-	"internal/byteorder"
 	"io"
 	"slices"
 	"sort"
 	"time"
+
+	"github.com/shuque/daneclient/tls/internal/byteorder"
+	"github.com/shuque/daneclient/tls/internal/fips140tls"
+	"github.com/shuque/daneclient/tls/internal/tls13"
 )
 
 // maxClientPSKIdentities is the number of client PSK identities the server will

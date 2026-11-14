@@ -17,11 +17,9 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha512"
-	"crypto/tls/internal/fips140tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"internal/godebug"
 	"io"
 	"net"
 	"runtime"
@@ -29,7 +27,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	_ "unsafe" // for linkname
+
+	"github.com/shuque/daneclient/tls/internal/fips140tls"
+	"github.com/shuque/daneclient/tls/internal/godebug"
 )
 
 const (
@@ -1326,8 +1326,6 @@ func (c *Config) mutualVersion(isClient, isQUIC bool, peerVersions []uint16) (ui
 //
 // Do not remove or change the type signature.
 // See go.dev/issue/67401.
-//
-//go:linkname errNoCertificates
 var errNoCertificates = errors.New("tls: no certificates configured")
 
 // getCertificate returns the best certificate for the given ClientHelloInfo,

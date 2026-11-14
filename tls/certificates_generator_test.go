@@ -11,7 +11,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
-	icryptotest "crypto/internal/cryptotest"
 	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/rsa"
@@ -20,13 +19,15 @@ import (
 	"encoding/pem"
 	"flag"
 	"fmt"
-	"internal/testenv"
 	"math/big"
 	"os"
 	"strings"
 	"testing"
 	"testing/cryptotest"
 	"time"
+
+	icryptotest "github.com/shuque/daneclient/tls/internal/cryptotest"
+	"github.com/shuque/daneclient/tls/internal/testenv"
 )
 
 var generate = flag.Bool("generate", false, "regenerate certificates_test.go")

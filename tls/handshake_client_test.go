@@ -11,7 +11,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/tls/internal/fips140tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
@@ -19,7 +18,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"internal/byteorder"
 	"io"
 	"math/big"
 	"net"
@@ -32,6 +30,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/shuque/daneclient/tls/internal/byteorder"
+	"github.com/shuque/daneclient/tls/internal/fips140tls"
 )
 
 // Note: see comment in handshake_test.go for details of how the reference

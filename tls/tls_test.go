@@ -12,11 +12,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/fips140"
-	"crypto/internal/boring"
-	"crypto/internal/cryptotest"
 	"crypto/mldsa"
 	"crypto/rand"
-	"crypto/tls/internal/fips140tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -24,7 +21,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"internal/testenv"
 	"io"
 	"math"
 	"math/big"
@@ -36,6 +32,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shuque/daneclient/tls/internal/boring"
+	"github.com/shuque/daneclient/tls/internal/cryptotest"
+	"github.com/shuque/daneclient/tls/internal/fips140tls"
+	"github.com/shuque/daneclient/tls/internal/testenv"
 	"golang.org/x/crypto/cryptobyte"
 )
 
