@@ -24,7 +24,9 @@ const (
 	ServerAuthInsecure
 )
 
-// ClientOptions configures ClientConfig.
+// ClientOptions configures ClientConfig. ServerName and Port are fixed in
+// the resulting config, so a config (and any HTTPClient built on it)
+// serves one origin: disable redirects, or build a client for each host.
 type ClientOptions struct {
 	Certificate *tls.Certificate // nil = no client cert
 	ClientName  string           // DANE ClientName; "" = don't send

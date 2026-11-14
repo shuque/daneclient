@@ -55,7 +55,10 @@ func RequireDANE(h http.Handler) http.Handler {
 	})
 }
 
-// HTTPClient returns an HTTP/1.1 client that dials TLS with cfg.
+// HTTPClient returns an HTTP/1.1 client that dials TLS with cfg. cfg fixes
+// ServerName (and, for DANE server authentication, the port), so the
+// client serves one origin only: disable redirects (CheckRedirect), or
+// build a client for each host.
 func HTTPClient(cfg *tls.Config) *http.Client {
 	d := &tls.Dialer{Config: cfg}
 	return &http.Client{Transport: &http.Transport{

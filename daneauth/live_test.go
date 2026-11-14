@@ -125,4 +125,13 @@ func TestLiveWrongKey(t *testing.T) {
 	})
 	o := handshake(t, liveServer(t, res), clientConfig(v[0], tlsCert(k, c)))
 	wantAlert(t, o, tls.AlertError(40))
+	r := o.serverConn.NetConn().(*resultConn).res.Load()
+	if r == nil || r.Reason != "no matching tlsa" {
+		var reason string
+		var err error
+		if r != nil {
+			reason, err = r.Reason, r.Err
+		}
+		t.Fatalf("stored reason = %q (err %v), want %q", reason, err, "no matching tlsa")
+	}
 }

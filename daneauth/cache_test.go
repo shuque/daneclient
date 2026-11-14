@@ -77,6 +77,35 @@ func TestCacheNegative(t *testing.T) {
 	}
 }
 
+func TestCacheNXDOMAIN(t *testing.T) {
+	var n atomic.Int32
+	le := &dane.LookupError{Qname: "a.example.", Err: dane.ErrNXDOMAIN, NegTTL: 10}
+	c := newTLSACache(countingLookup(&n, nil, le), 0, newFakeClock().Now)
+	if _, cached, err := c.Lookup(context.Background(), "a.example."); cached || !errors.Is(err, dane.ErrNXDOMAIN) {
+		t.Fatalf("first: cached=%v err=%v", cached, err)
+	}
+	_, cached, err := c.Lookup(context.Background(), "a.example.")
+	if !cached || !errors.Is(err, dane.ErrNXDOMAIN) || n.Load() != 1 {
+		t.Fatalf("second: cached=%v err=%v calls=%d", cached, err, n.Load())
+	}
+}
+
+func TestCacheNegativeCap(t *testing.T) {
+	var n atomic.Int32
+	clk := newFakeClock()
+	le := &dane.LookupError{Qname: "a.example.", Err: dane.ErrNXDOMAIN, NegTTL: 7200}
+	c := newTLSACache(countingLookup(&n, nil, le), 0, clk.Now)
+	c.Lookup(context.Background(), "a.example.")
+	clk.Advance(3599 * time.Second)
+	if _, cached, _ := c.Lookup(context.Background(), "a.example."); !cached {
+		t.Fatal("want cached at 3599s")
+	}
+	clk.Advance(2 * time.Second)
+	if _, cached, _ := c.Lookup(context.Background(), "a.example."); cached || n.Load() != 2 {
+		t.Fatalf("want expired at 3601s (cap 3600); calls=%d", n.Load())
+	}
+}
+
 func TestCacheNegativeDefault(t *testing.T) {
 	var n atomic.Int32
 	clk := newFakeClock()
@@ -98,9 +127,11 @@ func TestCacheNoCacheServFail(t *testing.T) {
 		var n atomic.Int32
 		le := &dane.LookupError{Qname: "a.example.", Err: sentinel, NegTTL: 10}
 		c := newTLSACache(countingLookup(&n, nil, le), 0, nil)
-		c.Lookup(context.Background(), "a.example.")
+		if _, cached, err := c.Lookup(context.Background(), "a.example."); cached || !errors.Is(err, sentinel) {
+			t.Fatalf("%v: first: cached=%v err=%v", sentinel, cached, err)
+		}
 		_, cached, err := c.Lookup(context.Background(), "a.example.")
-		if cached || err == nil || n.Load() != 2 {
+		if cached || !errors.Is(err, sentinel) || n.Load() != 2 {
 			t.Fatalf("%v: cached=%v calls=%d", sentinel, cached, n.Load())
 		}
 	}

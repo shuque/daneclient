@@ -293,6 +293,25 @@ func TestServerNoMatchRequired(t *testing.T) {
 	wantAlert(t, handshake(t, s, clientConfig(eeName, cert)), 40)
 }
 
+// A step 4 failure logs one line per TLSA record, and the abort error
+// names the client.
+func TestServerNoMatchLogsRecords(t *testing.T) {
+	dnsSrv := danetest.NewDNSServer(t)
+	cert, _ := eeClient(t)
+	rec := otherKeyRecord(t)
+	serveTLSA(dnsSrv, eeName, true, 0, rec)
+	var logs logCapture
+	s := newTestServer(t, dnsSrv, func(o *ServerOptions) { o.Logf = logs.Logf })
+	o := handshake(t, s, clientConfig(eeName, cert))
+	wantAlert(t, o, 40)
+	if want := fmt.Sprintf("client %q: no matching tlsa", eeName); !strings.Contains(o.serverErr.Error(), want) {
+		t.Fatalf("server error %q lacks %q", o.serverErr, want)
+	}
+	if !logs.contains("step 4: record " + rec.String()) {
+		t.Fatalf("no per-record log line for %v in %q", rec, logs.lines)
+	}
+}
+
 func TestServerNoMatchOptional(t *testing.T) {
 	dnsSrv := danetest.NewDNSServer(t)
 	cert, _ := eeClient(t)
@@ -330,6 +349,61 @@ func TestServerInsecure(t *testing.T) {
 			t.Fatalf("RRset/Verify set after a failed lookup: %+v", res)
 		}
 	})
+}
+
+// A failed TLSA lookup is reported with its sentinel under Optional and
+// aborts with handshake_failure under Required.
+func TestServerLookupFailures(t *testing.T) {
+	cases := []struct {
+		name     string
+		ans      danetest.Answer
+		sentinel error
+	}{
+		{"NXDOMAIN", danetest.Answer{Rcode: dns.RcodeNameError, AD: true}, dane.ErrNXDOMAIN},
+		{"NODATA", danetest.Answer{Rcode: dns.RcodeSuccess, AD: true}, dane.ErrNoData},
+		{"ServFail", danetest.Answer{Rcode: dns.RcodeServerFailure}, dane.ErrServFail},
+	}
+	for _, c := range cases {
+		t.Run(c.name+"/Optional", func(t *testing.T) {
+			dnsSrv := danetest.NewDNSServer(t)
+			cert, _ := eeClient(t)
+			dnsSrv.Set(eeName, dns.TypeTLSA, c.ans)
+			s := newTestServer(t, dnsSrv, optional)
+			res := wantOK(t, handshake(t, s, clientConfig(eeName, cert)))
+			wantUnauth(t, res, "tlsa lookup: "+c.sentinel.Error())
+			if !errors.Is(res.Err, c.sentinel) {
+				t.Fatalf("Err = %v, want %v", res.Err, c.sentinel)
+			}
+		})
+		t.Run(c.name+"/Required", func(t *testing.T) {
+			dnsSrv := danetest.NewDNSServer(t)
+			cert, _ := eeClient(t)
+			dnsSrv.Set(eeName, dns.TypeTLSA, c.ans)
+			s := newTestServer(t, dnsSrv, nil)
+			wantAlert(t, handshake(t, s, clientConfig(eeName, cert)), 40)
+		})
+	}
+}
+
+// Session tickets are disabled, so a second connection from a client with
+// a session cache does a full handshake and is authenticated again.
+func TestServerNoResumption(t *testing.T) {
+	dnsSrv := danetest.NewDNSServer(t)
+	cert, rec := eeClient(t)
+	serveTLSA(dnsSrv, eeName, true, 0, rec)
+	s := newTestServer(t, dnsSrv, nil)
+	ccfg := clientConfig(eeName, cert)
+	ccfg.ClientSessionCache = tls.NewLRUClientSessionCache(4)
+	for i := 0; i < 2; i++ {
+		o := handshake(t, s, ccfg)
+		res := wantOK(t, o)
+		if !res.Authenticated {
+			t.Fatalf("connection %d: result = %+v", i, res)
+		}
+		if o.serverConn.ConnectionState().DidResume {
+			t.Fatalf("connection %d resumed", i)
+		}
+	}
 }
 
 func TestServerAllowlistBeforeLookup(t *testing.T) {
@@ -468,12 +542,18 @@ func TestServerNameMismatch(t *testing.T) {
 		s := newTestServer(t, dnsSrv, func(o *ServerOptions) { o.Policy = p; o.Logf = logs.Logf })
 		o := handshake(t, s, clientConfig(taName, cert))
 		wantAlert(t, o, 40)
+		if want := fmt.Sprintf("client %q: name mismatch", taName); !strings.Contains(o.serverErr.Error(), want) {
+			t.Fatalf("policy %d: server error %q lacks %q", p, o.serverErr, want)
+		}
 		res := o.serverConn.NetConn().(*resultConn).res.Load()
 		if res == nil || res.Authenticated || res.Reason != "name mismatch" || !errors.Is(res.Err, dane.ErrNameMismatch) {
 			t.Fatalf("policy %d: stored result = %+v", p, res)
 		}
 		if !logs.contains("step 4: name mismatch") {
-			t.Fatalf("policy %d: no name mismatch log line in %q", p, logs.lines)
+			logs.mu.Lock()
+			lines := append([]string(nil), logs.lines...)
+			logs.mu.Unlock()
+			t.Fatalf("policy %d: no name mismatch log line in %q", p, lines)
 		}
 	}
 }

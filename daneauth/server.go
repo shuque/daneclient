@@ -42,7 +42,8 @@ type ServerOptions struct {
 }
 
 // AuthResult is the outcome of DANE client authentication on one
-// connection.
+// connection. ClientName is as sent by the client, so compare it ASCII
+// case-insensitively.
 type AuthResult struct {
 	Authenticated bool
 	ClientName    string       // as sent; "" if none
@@ -100,7 +101,10 @@ func NewServer(opts ServerOptions) (*Server, error) {
 // TLSConfig returns a copy of the server's base TLS config. Its
 // GetConfigForClient installs the DANE check, so DANE authentication is
 // enforced on any connection that uses it; but Result works only for
-// connections made by Server or NewListener. GetConfigForClient must not
+// connections made by Server or NewListener: a connection that uses the
+// config directly gets Result == nil, so under Optional it cannot be told
+// apart from an unauthenticated one. Use Server or NewListener.
+// GetConfigForClient must not
 // be replaced or removed: the copy's own VerifyConnection rejects every
 // connection. Other changes to the copy are not seen by
 // GetConfigForClient, which derives from the base config.
@@ -175,9 +179,17 @@ func (s *Server) configForClient(hello *tls.ClientHelloInfo) (*tls.Config, error
 		if res.Authenticated || (s.opts.Policy == Optional && !errors.Is(res.Err, dane.ErrNameMismatch)) {
 			return nil
 		}
-		return fmt.Errorf("daneauth: %s: %w", res.Reason, alertHandshakeFailure)
+		return failError(res, alertHandshakeFailure)
 	}
 	return cfg, nil
+}
+
+// failError builds the error that aborts a handshake, naming the client.
+func failError(res *AuthResult, alert tls.AlertError) error {
+	if res.ClientName == "" {
+		return fmt.Errorf("daneauth: %s: %w", res.Reason, alert)
+	}
+	return fmt.Errorf("daneauth: client %q: %s: %w", res.ClientName, res.Reason, alert)
 }
 
 func (s *Server) logf(format string, args ...any) {
@@ -249,6 +261,11 @@ func (s *Server) verify(ctx context.Context, cs tls.ConnectionState) *AuthResult
 		reason := "no matching tlsa"
 		if errors.Is(err, dane.ErrNameMismatch) {
 			reason = "name mismatch"
+		}
+		if s.opts.Logf != nil && vres != nil {
+			for _, r := range vres.Records {
+				s.logf("daneauth: client %q: step 4: record %v: %s: %s", name, r.Record, r.Status, r.Detail)
+			}
 		}
 		return s.fail(res, 4, reason, err)
 	}
