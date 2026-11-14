@@ -28,8 +28,12 @@ func writePEM(t *testing.T, dir string, c *x509.Certificate, key any) (string, s
 		t.Fatal(err)
 	}
 	cf, kf := filepath.Join(dir, "c.crt"), filepath.Join(dir, "c.key")
-	os.WriteFile(cf, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}), 0o600)
-	os.WriteFile(kf, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: kb}), 0o600)
+	if err := os.WriteFile(cf, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(kf, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: kb}), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	return cf, kf
 }
 
@@ -87,15 +91,50 @@ func TestRunDANEClient(t *testing.T) {
 }
 
 func TestRunBadArgs(t *testing.T) {
-	for _, args := range [][]string{
-		{"http://example.com/"},
-		{"-name", "x.example", "https://example.com/"},
-		{"-server-auth", "bogus", "https://example.com/"},
-		{"-cert", "x", "https://example.com/"},
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"http://example.com/"}, "must be https"},
+		{[]string{"-name", "x.example", "https://example.com/"}, "Certificate is nil"},
+		{[]string{"-server-auth", "bogus", "https://example.com/"}, "invalid -server-auth"},
+		{[]string{"-cert", "x", "https://example.com/"}, "must be given together"},
+		{[]string{"https://example.com:0/"}, "bad port"},
+		{[]string{}, "usage"},
 	} {
 		var out, errb bytes.Buffer
-		if err := run(args, &out, &errb); err == nil {
-			t.Errorf("%v accepted", args)
+		err := run(tc.args, &out, &errb)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%v: err = %v, want substring %q", tc.args, err, tc.want)
+		}
+	}
+}
+
+func TestRunHelp(t *testing.T) {
+	var out, errb bytes.Buffer
+	if err := run([]string{"-h"}, &out, &errb); err != nil || !strings.Contains(errb.String(), "-server-auth") {
+		t.Fatalf("err = %v, usage %q", err, errb.String())
+	}
+}
+
+func TestParseTarget(t *testing.T) {
+	for _, tc := range []struct {
+		raw, host string
+		port      int
+	}{
+		{"https://example.com/x", "example.com", 443},
+		{"https://example.com:8443/", "example.com", 8443},
+		{"https://[::1]:8443/", "::1", 8443},
+		{"https://[::1]/", "::1", 443},
+	} {
+		_, host, port, err := parseTarget(tc.raw)
+		if err != nil || host != tc.host || port != tc.port {
+			t.Errorf("%s = %q %d %v, want %q %d", tc.raw, host, port, err, tc.host, tc.port)
+		}
+	}
+	for _, raw := range []string{"https://example.com:0/", "https://example.com:65536/", "https://example.com:99999/", "https:///path", "http://example.com/", "example.com", "https://example.com:x/"} {
+		if _, _, _, err := parseTarget(raw); err == nil {
+			t.Errorf("%s accepted", raw)
 		}
 	}
 }

@@ -29,6 +29,24 @@ func main() {
 	}
 }
 
+// parseTarget parses the https URL, returning it with its host and port
+// (443 if absent).
+func parseTarget(raw string) (u *url.URL, host string, port int, err error) {
+	if u, err = url.Parse(raw); err != nil {
+		return nil, "", 0, err
+	}
+	if u.Scheme != "https" || u.Hostname() == "" {
+		return nil, "", 0, errors.New("the URL must be https://host[:port]/...")
+	}
+	port = 443
+	if p := u.Port(); p != "" {
+		if port, err = strconv.Atoi(p); err != nil || port < 1 || port > 65535 {
+			return nil, "", 0, fmt.Errorf("bad port %q (want 1-65535)", p)
+		}
+	}
+	return u, u.Hostname(), port, nil
+}
+
 func run(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("daneclient", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -39,26 +57,20 @@ func run(args []string, stdout, stderr io.Writer) error {
 	resolver := fs.String("resolver", "", "DNS resolver host:port for -server-auth dane; must be DNSSEC-validating (answers need the AD bit); default from /etc/resolv.conf")
 	cafile := fs.String("cafile", "", "PEM file of PKIX root CAs (default: system roots)")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if fs.NArg() != 1 {
 		return errors.New("usage: daneclient [flags] https://host[:port]/path")
 	}
-	u, err := url.Parse(fs.Arg(0))
+	u, host, port, err := parseTarget(fs.Arg(0))
 	if err != nil {
 		return err
 	}
-	if u.Scheme != "https" || u.Hostname() == "" {
-		return errors.New("the URL must be https://host[:port]/...")
-	}
-	port := 443
-	if p := u.Port(); p != "" {
-		if port, err = strconv.Atoi(p); err != nil {
-			return fmt.Errorf("bad port %q", p)
-		}
-	}
 
-	opts := daneauth.ClientOptions{ClientName: *name, ServerName: u.Hostname(), Port: port}
+	opts := daneauth.ClientOptions{ClientName: *name, ServerName: host, Port: port}
 	switch *mode {
 	case "pkix":
 		opts.ServerAuth = daneauth.ServerAuthPKIX
@@ -104,6 +116,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	// Capture the *tls.Conn by wrapping the transport's dialer.
 	client := daneauth.HTTPClient(cfg)
 	client.Timeout = 30 * time.Second
+	// Do not follow redirects: the printed TLS state is of the one connection used.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	tr := client.Transport.(*http.Transport)
 	inner := tr.DialTLSContext
 	var mu sync.Mutex

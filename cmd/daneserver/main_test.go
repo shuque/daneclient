@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"crypto/x509"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/shuque/dane/v2"
@@ -27,7 +31,7 @@ func newCert(t *testing.T, name string, eku x509.ExtKeyUsage) (tls.Certificate, 
 // startMux serves newMux on loopback with a fake DNS publishing a DANE-EE
 // record for clientName's certificate, and returns the address and the
 // client certificate.
-func startMux(t *testing.T) (string, tls.Certificate) {
+func startMux(t *testing.T, pol daneauth.Policy) (string, tls.Certificate, *logBuf) {
 	t.Helper()
 	dnsSrv := danetest.NewDNSServer(t)
 	ccert, cx := newCert(t, clientName, x509.ExtKeyUsageClientAuth)
@@ -44,7 +48,7 @@ func startMux(t *testing.T) (string, tls.Certificate) {
 	s, err := daneauth.NewServer(daneauth.ServerOptions{
 		Certificates: []tls.Certificate{scert},
 		Resolver:     dane.NewResolver(dnsSrv.Addr),
-		Policy:       daneauth.Optional,
+		Policy:       pol,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -53,11 +57,42 @@ func startMux(t *testing.T) (string, tls.Certificate) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := s.HTTPServer(newMux(s))
+	logs := &logBuf{}
+	srv := httpServer(s)
 	done := make(chan struct{})
-	go func() { srv.Serve(s.NewListener(ln)); close(done) }()
+	go func() { srv.Serve(&logListener{Listener: s.NewListener(ln), logf: logs.logf}); close(done) }()
 	t.Cleanup(func() { srv.Close(); <-done })
-	return ln.Addr().String(), ccert
+	return ln.Addr().String(), ccert, logs
+}
+
+// logBuf is a goroutine-safe log capture.
+type logBuf struct {
+	mu sync.Mutex
+	sb strings.Builder
+}
+
+func (b *logBuf) logf(format string, args ...any) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	fmt.Fprintf(&b.sb, format+"\n", args...)
+}
+
+func (b *logBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.sb.String()
+}
+
+// waitLog waits for the log to contain want.
+func (b *logBuf) waitLog(t *testing.T, want string) {
+	t.Helper()
+	for i := 0; i < 200; i++ {
+		if strings.Contains(b.String(), want) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("log lacks %q:\n%s", want, b.String())
 }
 
 func hexOf(b []byte) string {
@@ -82,7 +117,7 @@ func getBody(t *testing.T, c *http.Client, url string) (int, string) {
 }
 
 func TestNewMuxWhoami(t *testing.T) {
-	addr, ccert := startMux(t)
+	addr, ccert, _ := startMux(t, daneauth.Optional)
 	cfg, err := daneauth.ClientConfig(daneauth.ClientOptions{
 		Certificate: &ccert, ClientName: clientName, ServerName: "server.example.net",
 		ServerAuth: daneauth.ServerAuthInsecure,
@@ -124,7 +159,7 @@ func TestNewMuxWhoami(t *testing.T) {
 }
 
 func TestNewMuxUnauthenticated(t *testing.T) {
-	addr, _ := startMux(t)
+	addr, _, _ := startMux(t, daneauth.Optional)
 	c := daneauth.HTTPClient(&tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true})
 	code, body := getBody(t, c, "https://"+addr+"/whoami")
 	var w whoami
@@ -136,7 +171,7 @@ func TestNewMuxUnauthenticated(t *testing.T) {
 	}
 }
 
-func TestParseAllow(t *testing.T) {
+func TestSplitList(t *testing.T) {
 	got := splitList([]string{"a.example, b.example ,,", " ", "c.example"})
 	want := []string{"a.example", "b.example", "c.example"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
@@ -156,5 +191,44 @@ func TestParseUsages(t *testing.T) {
 		if _, err := parseUsages(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+func TestLogListenerAuthenticated(t *testing.T) {
+	addr, ccert, logs := startMux(t, daneauth.Required)
+	cfg, err := daneauth.ClientConfig(daneauth.ClientOptions{
+		Certificate: &ccert, ClientName: clientName, ServerName: "server.example.net",
+		ServerAuth: daneauth.ServerAuthInsecure,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := getBody(t, daneauth.HTTPClient(cfg), "https://"+addr+"/"); code != 200 {
+		t.Fatalf("status %d", code)
+	}
+	logs.waitLog(t, `client_name="`+clientName+`" reason="authenticated"`)
+}
+
+func TestLogListenerRejected(t *testing.T) {
+	addr, _, logs := startMux(t, daneauth.Required)
+	c := daneauth.HTTPClient(&tls.Config{MinVersion: tls.VersionTLS13, InsecureSkipVerify: true})
+	if _, err := c.Get("https://" + addr + "/"); err == nil {
+		t.Fatal("rejected client got a response")
+	}
+	logs.waitLog(t, "handshake failed")
+	logs.waitLog(t, "no dane_clientid")
+}
+
+func TestRunFlags(t *testing.T) {
+	for _, bad := range []string{"", ","} {
+		var errb bytes.Buffer
+		err := run([]string{"-allow", bad, "-cert", "x", "-key", "y"}, &errb)
+		if err == nil || !strings.Contains(err.Error(), "-allow") {
+			t.Errorf("-allow %q: err = %v", bad, err)
+		}
+	}
+	var errb bytes.Buffer
+	if err := run([]string{"-h"}, &errb); err != nil || !strings.Contains(errb.String(), "-listen") {
+		t.Fatalf("-h: err = %v, output %q", err, errb.String())
 	}
 }

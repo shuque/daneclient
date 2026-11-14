@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -16,7 +17,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/shuque/dane/v2"
@@ -31,10 +31,17 @@ func main() {
 	}
 }
 
-type listFlag []string
+type listFlag struct {
+	vals []string
+	set  bool // the flag was given at least once
+}
 
-func (l *listFlag) String() string     { return strings.Join(*l, ",") }
-func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
+func (l *listFlag) String() string { return strings.Join(l.vals, ",") }
+func (l *listFlag) Set(v string) error {
+	l.vals = append(l.vals, v)
+	l.set = true
+	return nil
+}
 
 // splitList splits each value on commas, trims whitespace and drops empty
 // entries.
@@ -88,10 +95,18 @@ func run(args []string, stderr io.Writer) error {
 	usages := fs.String("usages", "", "allowed certificate usages, comma list of 0-3; default all")
 	verbose := fs.Bool("v", false, "log each verification step")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if fs.NArg() != 0 {
 		return errors.New("unexpected arguments")
+	}
+	// An -allow that yields no names must not silently allow every name.
+	allowNames := splitList(allow.vals)
+	if allow.set && len(allowNames) == 0 {
+		return errors.New("-allow given but contains no names")
 	}
 	if *certFile == "" || *keyFile == "" {
 		return errors.New("-cert and -key are required")
@@ -118,8 +133,8 @@ func run(args []string, stderr io.Writer) error {
 		return err
 	}
 	var al *daneauth.Allowlist
-	if names := splitList(allow); len(names) > 0 {
-		if al, err = daneauth.ParseAllowlist(names); err != nil {
+	if len(allowNames) > 0 {
+		if al, err = daneauth.ParseAllowlist(allowNames); err != nil {
 			return err
 		}
 	}
@@ -144,37 +159,52 @@ func run(args []string, stderr io.Writer) error {
 	}
 	log.Printf("daneserver: listening on %s (policy %s)", ln.Addr(), *policy)
 	srv := httpServer(s)
-	return srv.Serve(s.NewListener(ln))
+	return srv.Serve(&logListener{Listener: s.NewListener(ln), logf: log.Printf})
 }
 
-// httpServer returns the demo http.Server, logging one line per connection.
+// httpServer returns the demo http.Server.
 func httpServer(s *daneauth.Server) *http.Server {
 	srv := s.HTTPServer(newMux(s))
 	srv.ReadHeaderTimeout = 10 * time.Second
-	var mu sync.Mutex
-	seen := map[net.Conn]bool{}
-	srv.ConnState = func(c net.Conn, st http.ConnState) {
-		mu.Lock()
-		defer mu.Unlock()
-		switch st {
-		case http.StateActive:
-			if seen[c] {
-				return
-			}
-			seen[c] = true
-			// net/http has read a request, so the handshake is done.
-			name, reason := "", "-"
-			if tc, ok := c.(*tls.Conn); ok {
-				if r := daneauth.Result(tc); r != nil {
-					name, reason = r.ClientName, r.Reason
-				}
-			}
-			log.Printf("conn %s client_name=%q reason=%q", c.RemoteAddr(), name, reason)
-		case http.StateClosed, http.StateHijacked:
-			delete(seen, c)
-		}
-	}
 	return srv
+}
+
+// handshakeTimeout bounds the logging handshake goroutine.
+const handshakeTimeout = 30 * time.Second
+
+// logListener logs one line per connection: the outcome of its handshake,
+// whether accepted or rejected. It returns the *tls.Conn unchanged.
+type logListener struct {
+	net.Listener
+	logf func(format string, args ...any)
+}
+
+func (l *logListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if tc, ok := c.(*tls.Conn); ok {
+		go l.logHandshake(tc)
+	}
+	return c, nil
+}
+
+// logHandshake drives the handshake (serialised with net/http's own, on
+// the first Read) and logs its outcome.
+func (l *logListener) logHandshake(tc *tls.Conn) {
+	ctx, cancel := context.WithTimeout(context.Background(), handshakeTimeout)
+	defer cancel()
+	remote := tc.RemoteAddr()
+	if err := tc.HandshakeContext(ctx); err != nil {
+		l.logf("conn %s handshake failed: %v", remote, err)
+		return
+	}
+	name, reason := "", "-"
+	if r := daneauth.Result(tc); r != nil {
+		name, reason = r.ClientName, r.Reason
+	}
+	l.logf("conn %s client_name=%q reason=%q", remote, name, reason)
 }
 
 type rrsetJSON struct {
