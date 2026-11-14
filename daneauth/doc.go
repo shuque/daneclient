@@ -10,13 +10,13 @@
 // numbering in Server.verify and its Logf lines):
 //
 //   - 1, request a certificate with an empty dane_clientid: NewServer
-//     (DANEClientAuth, ClientAuth per Policy); the fork builds the
-//     CertificateRequest.
+//     (DANEClientAuth, and ClientAuth RequestClientCert under both
+//     policies); the fork builds the CertificateRequest.
 //   - 2, receive the Certificate and its dane_clientid: the fork, which
 //     exposes the name as ConnectionState.DANEClientName.
 //   - 3, extract the name: a zero-length ClientName is rejected by the fork
-//     with handshake_failure; an absent one is VerifyConnection step 1
-//     ("no dane_clientid").
+//     with handshake_failure; an absent one, including no certificate at
+//     all, is VerifyConnection step 1 ("no dane_clientid").
 //   - 4, authorization rules, then the DNSSEC-validated TLSA lookup at the
 //     ClientName: VerifyConnection step 2 (Allowlist, "name not allowed",
 //     no DNS query) and step 3 (bounded by LookupTimeout, cached per TTL,
@@ -25,13 +25,21 @@
 //     sufficing, with digest agility: VerifyConnection step 4, dane.Verify
 //     with RoleClient ("no matching tlsa").
 //   - The ClientName must match a SAN dNSName where names are checked:
-//     dane.Verify ("name mismatch").
+//     dane.Verify ("name mismatch"). This aborts with handshake_failure
+//     under both policies, as the draft gives no policy escape.
 //   - The name is made available to the application: Result and
 //     AuthResult.ClientName, after VerifyConnection step 5
 //     ("authenticated").
 //
-// Under Required every failure aborts with handshake_failure; under
-// Optional the handshake completes and the client is unauthenticated.
+// Under Required, every VerifyConnection failure aborts with
+// handshake_failure. Under Optional, the handshake completes with the
+// client unauthenticated, except on a name mismatch, which always aborts
+// with handshake_failure. Failures the fork detects itself (a malformed
+// dane_clientid, or a bad CertificateVerify) send the fork's own alerts.
+//
+// TLSConfig returns a copy of the base config. Its GetConfigForClient
+// installs the DANE check and must not be replaced; the copy's own
+// VerifyConnection rejects every connection, so removing it fails closed.
 // Result returns nil until the handshake has completed, because
 // VerifyConnection runs before the client's CertificateVerify is checked.
 package daneauth

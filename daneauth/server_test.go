@@ -5,10 +5,12 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -166,12 +168,18 @@ func tcpPair(t *testing.T) (client, server net.Conn) {
 // is done, so an alert is never lost to a TCP reset.
 func handshake(t *testing.T, s *Server, ccfg *tls.Config) hsOutcome {
 	t.Helper()
+	return handshakeWith(t, s.Server, ccfg)
+}
+
+// handshakeWith is handshake with the server conn made by mk.
+func handshakeWith(t *testing.T, mk func(net.Conn) *tls.Conn, ccfg *tls.Config) hsOutcome {
+	t.Helper()
 	cRaw, sRaw := tcpPair(t)
 	deadline := time.Now().Add(10 * time.Second)
 	cRaw.SetDeadline(deadline)
 	sRaw.SetDeadline(deadline)
 
-	sconn := s.Server(sRaw)
+	sconn := mk(sRaw)
 	clientDone := make(chan struct{})
 	serverErr := make(chan error, 1)
 	go func() {
@@ -401,6 +409,21 @@ func TestOptionalNoCert(t *testing.T) {
 	}
 }
 
+// A client that sends no certificate under Required reaches step 1 and
+// gets handshake_failure (draft 8.2 step 3), not certificate_required.
+func TestRequiredNoCert(t *testing.T) {
+	dnsSrv := danetest.NewDNSServer(t)
+	s := newTestServer(t, dnsSrv, nil)
+	o := handshake(t, s, clientConfig(""))
+	wantAlert(t, o, 40)
+	if res := o.serverConn.NetConn().(*resultConn).res.Load(); res == nil || res.Reason != "no dane_clientid" {
+		t.Fatalf("stored result = %+v", res)
+	}
+	if n := dnsSrv.Queries(); n != 0 {
+		t.Fatalf("DNS queries = %d, want 0", n)
+	}
+}
+
 func TestRequiredNoName(t *testing.T) {
 	// A certificate but no dane_clientid: draft 8.2 step 3, the server
 	// requires DANE client authentication, so handshake_failure.
@@ -410,16 +433,48 @@ func TestRequiredNoName(t *testing.T) {
 	wantAlert(t, handshake(t, s, clientConfig("", cert)), 40)
 }
 
+// logCapture collects Logf lines.
+type logCapture struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *logCapture) Logf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+func (l *logCapture) contains(sub string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, line := range l.lines {
+		if strings.Contains(line, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// A ClientName absent from the certificate's dNSNames aborts the
+// connection under either policy (draft 8.2, after step 6).
 func TestServerNameMismatch(t *testing.T) {
 	dnsSrv := danetest.NewDNSServer(t)
 	cert, rec := taClient(t, "other.example.com")
 	serveTLSA(dnsSrv, taName, true, 0, rec)
-	s := newTestServer(t, dnsSrv, optional)
 
-	res := wantOK(t, handshake(t, s, clientConfig(taName, cert)))
-	wantUnauth(t, res, "name mismatch")
-	if !errors.Is(res.Err, dane.ErrNameMismatch) {
-		t.Fatalf("Err = %v, want ErrNameMismatch", res.Err)
+	for _, p := range []Policy{Required, Optional} {
+		var logs logCapture
+		s := newTestServer(t, dnsSrv, func(o *ServerOptions) { o.Policy = p; o.Logf = logs.Logf })
+		o := handshake(t, s, clientConfig(taName, cert))
+		wantAlert(t, o, 40)
+		res := o.serverConn.NetConn().(*resultConn).res.Load()
+		if res == nil || res.Authenticated || res.Reason != "name mismatch" || !errors.Is(res.Err, dane.ErrNameMismatch) {
+			t.Fatalf("policy %d: stored result = %+v", p, res)
+		}
+		if !logs.contains("step 4: name mismatch") {
+			t.Fatalf("policy %d: no name mismatch log line in %q", p, logs.lines)
+		}
 	}
 }
 
@@ -452,25 +507,55 @@ func TestResultOnlyAfterHandshake(t *testing.T) {
 
 func TestServerConfigInvariants(t *testing.T) {
 	dnsSrv := danetest.NewDNSServer(t)
-	for _, c := range []struct {
-		p    Policy
-		auth tls.ClientAuthType
-	}{{Required, tls.RequireAnyClientCert}, {Optional, tls.RequestClientCert}} {
-		s := newTestServer(t, dnsSrv, func(o *ServerOptions) { o.Policy = c.p })
+	for _, p := range []Policy{Required, Optional} {
+		s := newTestServer(t, dnsSrv, func(o *ServerOptions) { o.Policy = p })
 		cfg := s.TLSConfig()
 		if cfg.MinVersion != tls.VersionTLS13 || !cfg.SessionTicketsDisabled || !cfg.DANEClientAuth {
 			t.Fatalf("policy %d: MinVersion %x, SessionTicketsDisabled %v, DANEClientAuth %v",
-				c.p, cfg.MinVersion, cfg.SessionTicketsDisabled, cfg.DANEClientAuth)
+				p, cfg.MinVersion, cfg.SessionTicketsDisabled, cfg.DANEClientAuth)
 		}
-		if cfg.ClientAuth != c.auth || cfg.GetConfigForClient == nil || len(cfg.Certificates) != 1 {
+		if cfg.ClientAuth != tls.RequestClientCert || cfg.GetConfigForClient == nil || len(cfg.Certificates) != 1 {
 			t.Fatalf("policy %d: ClientAuth %v, GetConfigForClient set %v, %d certs",
-				c.p, cfg.ClientAuth, cfg.GetConfigForClient != nil, len(cfg.Certificates))
+				p, cfg.ClientAuth, cfg.GetConfigForClient != nil, len(cfg.Certificates))
+		}
+		if err := cfg.VerifyConnection(tls.ConnectionState{}); err == nil {
+			t.Fatalf("policy %d: base VerifyConnection accepted a connection", p)
+		} else if a, ok := errors.AsType[tls.AlertError](err); !ok || a != 40 {
+			t.Fatalf("policy %d: base VerifyConnection error %v does not wrap AlertError(40)", p, err)
 		}
 	}
 	var zero ServerOptions
 	if zero.Policy != Required {
 		t.Fatal("zero Policy is not Required")
 	}
+}
+
+// TLSConfig used directly: DANE is still enforced (Result is nil, as the
+// conn is not a resultConn); with GetConfigForClient removed, every
+// connection is rejected.
+func TestTLSConfigDirect(t *testing.T) {
+	dnsSrv := danetest.NewDNSServer(t)
+	cert, rec := eeClient(t)
+	serveTLSA(dnsSrv, eeName, true, 0, rec)
+	s := newTestServer(t, dnsSrv, nil)
+
+	direct := func(c net.Conn) *tls.Conn { return tls.Server(c, s.TLSConfig()) }
+	o := handshakeWith(t, direct, clientConfig(eeName, cert))
+	if o.clientErr != nil || o.serverErr != nil {
+		t.Fatalf("direct: client %v; server %v", o.clientErr, o.serverErr)
+	}
+	if Result(o.serverConn) != nil {
+		t.Fatal("direct: Result non-nil for a conn not made by Server")
+	}
+	other, _ := eeClient(t) // key not in DNS
+	wantAlert(t, handshakeWith(t, direct, clientConfig(eeName, other)), 40)
+
+	stripped := func(c net.Conn) *tls.Conn {
+		cfg := s.TLSConfig()
+		cfg.GetConfigForClient = nil
+		return tls.Server(c, cfg)
+	}
+	wantAlert(t, handshakeWith(t, stripped, clientConfig(eeName, cert)), 40)
 }
 
 func TestNewServerErrors(t *testing.T) {
@@ -520,18 +605,24 @@ func TestServerListener(t *testing.T) {
 		_, err = tc.Write([]byte{'k'})
 		ch <- out{Result(tc), err}
 	}()
+	// The accept goroutine always sends on ch (its handshake is bounded
+	// by a deadline, and closing ln ends Accept), so waiting on ch before
+	// any t.Fatal keeps server-side Logf calls inside the test.
 	raw, err := net.Dial("tcp", inner.Addr().String())
 	if err != nil {
+		ln.Close()
+		<-ch
 		t.Fatal(err)
 	}
-	defer raw.Close()
 	raw.SetDeadline(time.Now().Add(10 * time.Second))
 	cc := tls.Client(raw, clientConfig(eeName, cert))
 	var b [1]byte
-	if _, err := io.ReadFull(cc, b[:]); err != nil {
-		t.Fatal(err)
-	}
+	_, rerr := io.ReadFull(cc, b[:])
+	raw.Close()
 	o := <-ch
+	if rerr != nil {
+		t.Fatalf("client: %v (server: %v)", rerr, o.err)
+	}
 	if o.err != nil || o.res == nil || !o.res.Authenticated {
 		t.Fatalf("listener result = %+v, %v", o.res, o.err)
 	}

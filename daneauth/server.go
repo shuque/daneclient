@@ -46,7 +46,7 @@ type ServerOptions struct {
 type AuthResult struct {
 	Authenticated bool
 	ClientName    string       // as sent; "" if none
-	Verify        *dane.Result // nil if verification never ran
+	Verify        *dane.Result // nil if verification never ran or dane.Verify returned no result (e.g. ErrNoChain)
 	RRset         *dane.RRset  // nil if lookup failed or never ran; shared, read-only
 	Cached        bool         // TLSA answer came from cache
 	Reason        string       // short, stable reason
@@ -70,12 +70,7 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	if len(opts.Certificates) == 0 {
 		return nil, errors.New("daneauth: ServerOptions.Certificates is empty")
 	}
-	clientAuth := tls.RequireAnyClientCert
-	switch opts.Policy {
-	case Required:
-	case Optional:
-		clientAuth = tls.RequestClientCert
-	default:
+	if opts.Policy != Required && opts.Policy != Optional {
 		return nil, fmt.Errorf("daneauth: invalid policy %d", opts.Policy)
 	}
 	if opts.LookupTimeout <= 0 {
@@ -87,8 +82,17 @@ func NewServer(opts ServerOptions) (*Server, error) {
 		MinVersion:             tls.VersionTLS13,
 		SessionTicketsDisabled: true, // a resumed connection carries no ClientName
 		DANEClientAuth:         true,
-		ClientAuth:             clientAuth,
-		GetConfigForClient:     s.configForClient,
+		// Request, not require, a certificate under both policies, so
+		// that a client sending none reaches VerifyConnection step 1 and
+		// gets handshake_failure under Required (draft 8.2 step 3),
+		// rather than the TLS stack's certificate_required.
+		ClientAuth:         tls.RequestClientCert,
+		GetConfigForClient: s.configForClient,
+		// Fail closed: GetConfigForClient replaces this with the DANE
+		// check. It runs only if a caller removed GetConfigForClient.
+		VerifyConnection: func(tls.ConnectionState) error {
+			return fmt.Errorf("daneauth: connection not set up by Server: %w", alertHandshakeFailure)
+		},
 	}
 	return s, nil
 }
@@ -96,8 +100,10 @@ func NewServer(opts ServerOptions) (*Server, error) {
 // TLSConfig returns a copy of the server's base TLS config. Its
 // GetConfigForClient installs the DANE check, so DANE authentication is
 // enforced on any connection that uses it; but Result works only for
-// connections made by Server or NewListener. Changes to the copy are not
-// seen by GetConfigForClient, which derives from the base config.
+// connections made by Server or NewListener. GetConfigForClient must not
+// be replaced or removed: the copy's own VerifyConnection rejects every
+// connection. Other changes to the copy are not seen by
+// GetConfigForClient, which derives from the base config.
 func (s *Server) TLSConfig() *tls.Config {
 	return s.base.Clone()
 }
@@ -164,7 +170,9 @@ func (s *Server) configForClient(hello *tls.ClientHelloInfo) (*tls.Config, error
 		if rc != nil {
 			rc.res.Store(res)
 		}
-		if res.Authenticated || s.opts.Policy == Optional {
+		// A ClientName that matches no dNSName in the certificate aborts
+		// the connection whatever the policy (draft 8.2, after step 6).
+		if res.Authenticated || (s.opts.Policy == Optional && !errors.Is(res.Err, dane.ErrNameMismatch)) {
 			return nil
 		}
 		return fmt.Errorf("daneauth: %s: %w", res.Reason, alertHandshakeFailure)
