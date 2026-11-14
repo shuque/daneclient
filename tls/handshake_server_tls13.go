@@ -62,6 +62,7 @@ type serverHandshakeStateTLS13 struct {
 	transcript      hash.Hash
 	clientFinished  []byte
 	echContext      *echServerContext
+	daneAdvertised  bool // our CertificateRequest carried dane_clientid
 }
 
 func (hs *serverHandshakeStateTLS13) handshake() error {
@@ -109,6 +110,7 @@ func (hs *serverHandshakeStateTLS13) processClientHello() error {
 	c := hs.c
 
 	hs.hello = new(serverHelloMsg)
+	hs.hello.daneClientID = c.config.testingDANEServerExt&daneHookServerHello != 0
 
 	if err := c.checkDANEClientHello(hs.clientHello); err != nil {
 		return err
@@ -549,6 +551,7 @@ func (hs *serverHandshakeStateTLS13) doHelloRetryRequest(selectedGroup CurveID) 
 	hs.transcript.Write(chHash)
 
 	helloRetryRequest := &serverHelloMsg{
+		daneClientID:      c.config.testingDANEServerExt&daneHookHRR != 0,
 		vers:              hs.hello.vers,
 		random:            helloRetryRequestRandom,
 		sessionId:         hs.hello.sessionId,
@@ -788,6 +791,7 @@ func (hs *serverHandshakeStateTLS13) sendServerParameters() error {
 
 	encryptedExtensions := new(encryptedExtensionsMsg)
 	encryptedExtensions.alpnProtocol = c.clientProtocol
+	encryptedExtensions.daneClientID = c.config.testingDANEServerExt&daneHookEncryptedExtensions != 0
 
 	if c.quic != nil {
 		p, err := c.quicGetTransportParameters()
@@ -845,6 +849,7 @@ func (hs *serverHandshakeStateTLS13) sendServerCertificate() error {
 		certReq.ocspStapling = true
 		certReq.scts = true
 		certReq.daneClientID = c.config.DANEClientAuth
+		hs.daneAdvertised = certReq.daneClientID
 		certReq.supportedSignatureAlgorithms = supportedSignatureAlgorithms(c.vers, c.vers)
 		certReq.supportedSignatureAlgorithmsCert = supportedSignatureAlgorithmsCert(c.vers, c.vers)
 		if c.config.ClientCAs != nil {
@@ -861,6 +866,7 @@ func (hs *serverHandshakeStateTLS13) sendServerCertificate() error {
 	certMsg.certificate = *hs.cert
 	certMsg.scts = hs.clientHello.scts && len(hs.cert.SignedCertificateTimestamps) > 0
 	certMsg.ocspStapling = hs.clientHello.ocspStapling && len(hs.cert.OCSPStaple) > 0
+	certMsg.daneClientID = c.config.testingDANEServerExt&daneHookCertificate != 0
 
 	if _, err := hs.c.writeHandshakeRecord(certMsg, hs.transcript); err != nil {
 		return err
@@ -992,6 +998,7 @@ func (c *Conn) sendSessionTicket(earlyData bool, extra [][]byte) error {
 		nil, suite.hash.Size())
 
 	m := new(newSessionTicketMsgTLS13)
+	m.daneClientID = c.config.testingDANEServerExt&daneHookNewSessionTicket != 0
 
 	state := c.sessionState()
 	state.secret = psk
@@ -1066,7 +1073,7 @@ func (hs *serverHandshakeStateTLS13) readClientCertificate() error {
 		return unexpectedMessageError(certMsg, msg)
 	}
 
-	if err := c.checkDANEClientCert(certMsg); err != nil {
+	if err := c.checkDANEClientCert(certMsg, hs.daneAdvertised); err != nil {
 		return err
 	}
 

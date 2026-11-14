@@ -996,7 +996,7 @@ func TestCloneNonFuncFields(t *testing.T) {
 			f.Set(reflect.ValueOf([]EncryptedClientHelloKey{
 				{Config: []byte{1}, PrivateKey: []byte{1}},
 			}))
-		case "mutex", "autoSessionTicketKeys", "sessionTicketKeys", "testingForceDANEExt", "testingDANEInCH", "testingDANEInCH2":
+		case "mutex", "autoSessionTicketKeys", "sessionTicketKeys", "testingForceDANEExt", "testingDANEInCH", "testingDANEInCH2", "testingDANEServerExt":
 			continue // these are unexported fields that are handled separately
 		default:
 			t.Errorf("all fields must be accounted for, but saw unknown field %q", fn)

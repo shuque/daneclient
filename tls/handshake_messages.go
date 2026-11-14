@@ -751,6 +751,9 @@ type serverHelloMsg struct {
 	// HelloRetryRequest extensions
 	cookie        []byte
 	selectedGroup CurveID
+
+	// dane_clientid seen (illegal here), or to be sent (tests)
+	daneClientID bool
 }
 
 func (m *serverHelloMsg) marshal() ([]byte, error) {
@@ -850,6 +853,9 @@ func (m *serverHelloMsg) marshal() ([]byte, error) {
 	if m.serverNameAck {
 		exts.AddUint16(extensionServerName)
 		exts.AddUint16(0)
+	}
+	if m.daneClientID {
+		addDANEClientID(&exts, "") // test hook only
 	}
 
 	extBytes, err := exts.Bytes()
@@ -993,6 +999,9 @@ func (m *serverHelloMsg) unmarshal(data []byte) bool {
 				return false
 			}
 			m.serverNameAck = true
+		case extensionDANEClientID:
+			m.daneClientID = true // illegal here; see handshake code
+			continue
 		default:
 			// Ignore unknown extensions.
 			continue
@@ -1016,6 +1025,7 @@ type encryptedExtensionsMsg struct {
 	earlyData               bool
 	echRetryConfigs         []byte
 	serverNameAck           bool
+	daneClientID            bool // illegal here; or to be sent (tests)
 }
 
 func (m *encryptedExtensionsMsg) marshal() ([]byte, error) {
@@ -1054,6 +1064,9 @@ func (m *encryptedExtensionsMsg) marshal() ([]byte, error) {
 			if m.serverNameAck {
 				b.AddUint16(extensionServerName)
 				b.AddUint16(0) // empty extension_data
+			}
+			if m.daneClientID {
+				addDANEClientID(b, "") // test hook only
 			}
 		})
 	})
@@ -1115,6 +1128,9 @@ func (m *encryptedExtensionsMsg) unmarshal(data []byte) bool {
 				return false
 			}
 			m.serverNameAck = true
+		case extensionDANEClientID:
+			m.daneClientID = true // illegal here; see handshake code
+			continue
 		default:
 			// Ignore unknown extensions.
 			continue
@@ -1183,6 +1199,7 @@ type newSessionTicketMsgTLS13 struct {
 	nonce        []byte
 	label        []byte
 	maxEarlyData uint32
+	daneClientID bool // illegal here; or to be sent (tests)
 }
 
 func (m *newSessionTicketMsgTLS13) marshal() ([]byte, error) {
@@ -1204,6 +1221,9 @@ func (m *newSessionTicketMsgTLS13) marshal() ([]byte, error) {
 				b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
 					b.AddUint32(m.maxEarlyData)
 				})
+			}
+			if m.daneClientID {
+				addDANEClientID(b, "") // test hook only
 			}
 		})
 	})
@@ -1239,6 +1259,9 @@ func (m *newSessionTicketMsgTLS13) unmarshal(data []byte) bool {
 			if !extData.ReadUint32(&m.maxEarlyData) {
 				return false
 			}
+		case extensionDANEClientID:
+			m.daneClientID = true // illegal here; see handshake code
+			continue
 		default:
 			// Ignore unknown extensions.
 			continue

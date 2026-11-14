@@ -188,11 +188,21 @@ func daneTestCert(t *testing.T) Certificate {
 type daneResult struct {
 	serverState, clientState ConnectionState
 	serverErr, clientErr     error
+	serverReadErr            error // with serverReads: the error from the server's first Read
+	clientSent               alert // the fatal alert the client sent, if any
 }
 
 // runDANE does a handshake over a local TCP pipe. clientErr includes any
 // alert the client received after its handshake finished.
 func runDANE(t *testing.T, cli, srv *Config) daneResult {
+	t.Helper()
+	return runDANEOpts(t, cli, srv, false)
+}
+
+// runDANEOpts is runDANE; if serverReads is set, the server does a Read after
+// its handshake (to observe an alert the client sends late) instead of
+// closing straight away.
+func runDANEOpts(t *testing.T, cli, srv *Config, serverReads bool) daneResult {
 	t.Helper()
 	var r daneResult
 	c, s := localPipe(t)
@@ -200,6 +210,13 @@ func runDANE(t *testing.T, cli, srv *Config) daneResult {
 	go func() {
 		defer close(done)
 		cc := Client(c, cli)
+		defer func() {
+			cc.out.Lock()
+			if oe, ok := errors.AsType[*net.OpError](cc.out.err); ok {
+				r.clientSent, _ = oe.Err.(alert)
+			}
+			cc.out.Unlock()
+		}()
 		if err := cc.Handshake(); err != nil {
 			r.clientErr = err
 			c.Close()
@@ -214,6 +231,10 @@ func runDANE(t *testing.T, cli, srv *Config) daneResult {
 	r.serverErr = sc.Handshake()
 	if r.serverErr == nil {
 		r.serverState = sc.ConnectionState()
+		if serverReads {
+			s.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_, r.serverReadErr = sc.Read(make([]byte, 1))
+		}
 		sc.Close()
 	}
 	s.Close()
@@ -230,8 +251,8 @@ func daneConfigs(t *testing.T) (cli, srv *Config) {
 
 func wantAlert(t *testing.T, err error, want alert) {
 	t.Helper()
-	a, ok := errors.AsType[alert](err)
-	if !ok || a != want {
+	a, ok := RemoteAlert(err)
+	if !ok || alert(a) != want {
 		t.Fatalf("got error %v, want alert %d", err, want)
 	}
 }
@@ -360,22 +381,111 @@ func TestDANETLS12Ignored(t *testing.T) {
 }
 
 func TestDANEServerCertCarries63(t *testing.T) {
-	// A server that (wrongly) sends dane_clientid in its Certificate must be
-	// rejected by the client with unsupported_extension. Exercise the helper
-	// that the client handshake uses.
-	cp, sp := net.Pipe()
-	got := make(chan []byte, 1)
-	go func() { b, _ := io.ReadAll(sp); got <- b }()
-	c := Client(cp, &Config{})
-	if err := c.checkDANEServerCert(&certificateMsgTLS13{daneClientID: true}); err == nil {
-		t.Fatal("no error for dane_clientid in server Certificate")
+	// A server that sends dane_clientid in its Certificate (hook) must be
+	// rejected by the client with unsupported_extension.
+	cli, srv := daneConfigs(t)
+	srv.testingDANEServerExt = daneHookCertificate
+	r := runDANE(t, cli, srv)
+	if r.clientErr == nil {
+		t.Fatal("client accepted dane_clientid in server Certificate")
 	}
-	cp.Close()
-	if b := <-got; len(b) < 7 || b[0] != byte(recordTypeAlert) || b[len(b)-2] != alertLevelError || b[len(b)-1] != byte(alertUnsupportedExtension) {
-		t.Fatalf("alert 110 not sent: %x", b)
+	if r.serverErr == nil {
+		t.Fatal("server handshake did not see the alert")
 	}
-	if err := c.checkDANEServerCert(&certificateMsgTLS13{}); err != nil {
-		t.Fatal(err)
+	wantAlert(t, r.serverErr, alertUnsupportedExtension)
+}
+
+// In these tests the server misplaces dane_clientid; the client must send
+// illegal_parameter, which the server sees.
+func testDANEMisplaced(t *testing.T, hook uint8, tune func(cli, srv *Config)) {
+	cli, srv := daneConfigs(t)
+	srv.testingDANEServerExt = hook
+	if tune != nil {
+		tune(cli, srv)
+	}
+	r := runDANEOpts(t, cli, srv, true)
+	if r.clientErr == nil {
+		t.Fatal("client accepted misplaced dane_clientid")
+	}
+	if r.clientSent != alertIllegalParameter {
+		t.Fatalf("client sent alert %d, want %d (client err %v)", r.clientSent, alertIllegalParameter, r.clientErr)
+	}
+}
+
+func TestDANEInServerHello(t *testing.T) { testDANEMisplaced(t, daneHookServerHello, nil) }
+func TestDANEInHRR(t *testing.T) {
+	testDANEMisplaced(t, daneHookHRR, func(cli, srv *Config) {
+		cli.CurvePreferences = []CurveID{CurveP256, CurveP384}
+		srv.CurvePreferences = []CurveID{CurveP384}
+	})
+}
+func TestDANEInEncryptedExtensions(t *testing.T) {
+	testDANEMisplaced(t, daneHookEncryptedExtensions, nil)
+}
+func TestDANEInNewSessionTicket(t *testing.T) {
+	// The client only advertises PSK modes (so receives tickets) with a cache.
+	testDANEMisplaced(t, daneHookNewSessionTicket, func(cli, srv *Config) {
+		cli.ClientSessionCache = NewLRUClientSessionCache(2)
+	})
+}
+
+func TestDANENonLeafIgnored(t *testing.T) {
+	ext := []byte{0x00, 0x3f, 0x00, 0x02, 0x01, 'a'}
+	entry0 := []byte{0, 0, 1, 9, 0, 0}
+	entry1 := append([]byte{0, 0, 1, 8, 0, byte(len(ext))}, ext...)
+	list := append(entry0, entry1...)
+	msg := append([]byte{0, 0, 0, byte(len(list))}, list...)
+	msg = append([]byte{typeCertificate, 0, 0, byte(len(msg))}, msg...)
+	var got certificateMsgTLS13
+	if !got.unmarshal(msg) {
+		t.Fatal("unmarshal failed")
+	}
+	if got.daneClientID || got.daneClientName != "" || len(got.certificate.Certificate) != 2 {
+		t.Fatalf("non-leaf extension not ignored: %+v", got)
+	}
+}
+
+func TestDANEResumption(t *testing.T) {
+	cli, srv := daneConfigs(t)
+	srv.DANEClientAuth = true
+	cli.DANEClientName = "dev1._device.example.com"
+	cli.ServerName = "server.example.com"
+	cli.ClientSessionCache = NewLRUClientSessionCache(4)
+	var seen []string
+	srv.VerifyConnection = func(cs ConnectionState) error { seen = append(seen, cs.DANEClientName); return nil }
+	r1 := runDANE(t, cli, srv)
+	if r1.serverErr != nil || r1.clientErr != nil || r1.serverState.DANEClientName == "" {
+		t.Fatalf("first: server %v client %v name %q", r1.serverErr, r1.clientErr, r1.serverState.DANEClientName)
+	}
+	r2 := runDANE(t, cli, srv)
+	if r2.serverErr != nil || r2.clientErr != nil {
+		t.Fatalf("second: server %v client %v", r2.serverErr, r2.clientErr)
+	}
+	if !r2.serverState.DidResume {
+		t.Fatal("second connection did not resume")
+	}
+	if r2.serverState.DANEClientName != "" || len(seen) != 2 || seen[1] != "" {
+		t.Fatalf("resumed: name %q, VerifyConnection saw %q", r2.serverState.DANEClientName, seen)
+	}
+}
+
+func TestRemoteAlert(t *testing.T) {
+	cli, srv := daneConfigs(t)
+	srv.DANEClientAuth = true
+	cli.DANEClientName = "a..example.com"
+	r := runDANE(t, cli, srv)
+	a, ok := RemoteAlert(r.clientErr)
+	if !ok || a != AlertError(alertHandshakeFailure) {
+		t.Fatalf("RemoteAlert(%v) = %v, %v", r.clientErr, a, ok)
+	}
+	if a, ok := RemoteAlert(fmt.Errorf("w: %w", AlertError(alertDecodeError))); !ok || a != AlertError(alertDecodeError) {
+		t.Fatalf("wrapped AlertError: %v %v", a, ok)
+	}
+	if _, ok := RemoteAlert(errors.New("x")); ok {
+		t.Fatal("plain error reported as alert")
+	}
+	if _, ok := RemoteAlert(nil); ok {
+		t.Fatal("nil reported as alert")
 	}
 }
 
@@ -455,9 +565,9 @@ func TestDANESetClientIDEmptyCert(t *testing.T) {
 }
 
 func TestDANEConfigClone(t *testing.T) {
-	c := &Config{DANEClientAuth: true, DANEClientName: "x._y.example.com", testingForceDANEExt: true, testingDANEInCH: true, testingDANEInCH2: true}
+	c := &Config{DANEClientAuth: true, DANEClientName: "x._y.example.com", testingForceDANEExt: true, testingDANEInCH: true, testingDANEInCH2: true, testingDANEServerExt: 5}
 	d := c.Clone()
-	if !d.DANEClientAuth || d.DANEClientName != c.DANEClientName || !d.testingForceDANEExt || !d.testingDANEInCH || !d.testingDANEInCH2 {
+	if !d.DANEClientAuth || d.DANEClientName != c.DANEClientName || !d.testingForceDANEExt || !d.testingDANEInCH || !d.testingDANEInCH2 || d.testingDANEServerExt != 5 {
 		t.Fatalf("clone lost fields: %+v", d)
 	}
 }

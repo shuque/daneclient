@@ -6,6 +6,7 @@ package tls
 
 import (
 	"errors"
+	"net"
 	"strings"
 
 	"golang.org/x/crypto/cryptobyte"
@@ -98,11 +99,11 @@ func (c *Conn) checkDANEClientHello(hello *clientHelloMsg) error {
 // certificate or VerifyConnection processing, so a bad name triggers no
 // further work. A message without the extension (including an empty
 // Certificate) leaves the name empty.
-func (c *Conn) checkDANEClientCert(m *certificateMsgTLS13) error {
+func (c *Conn) checkDANEClientCert(m *certificateMsgTLS13, advertised bool) error {
 	if !m.daneClientID {
 		return nil
 	}
-	if !c.config.DANEClientAuth {
+	if !advertised {
 		c.sendAlert(alertUnsupportedExtension)
 		return errors.New("tls: client Certificate carries unsupported extension dane_clientid (not requested)")
 	}
@@ -135,4 +136,42 @@ func (m *certificateMsgTLS13) setDANEClientID(cfg *Config, crAdvertised bool) {
 		(crAdvertised && cfg.DANEClientName != "" && len(m.certificate.Certificate) > 0) {
 		m.daneClientID, m.daneClientName = true, cfg.DANEClientName
 	}
+}
+
+// Server-side test hooks (Config.testingDANEServerExt bits): the server puts
+// a dane_clientid extension in the named message, where it is not allowed.
+const (
+	daneHookServerHello uint8 = 1 << iota
+	daneHookHRR
+	daneHookEncryptedExtensions
+	daneHookNewSessionTicket
+	daneHookCertificate
+)
+
+// checkDANEMisplaced rejects dane_clientid in a server message it is not
+// defined for (RFC 8446 section 4.2): illegal_parameter.
+func (c *Conn) checkDANEMisplaced(present bool, msg string) error {
+	if present {
+		c.sendAlert(alertIllegalParameter)
+		return errors.New("tls: server sent dane_clientid in " + msg)
+	}
+	return nil
+}
+
+// RemoteAlert returns the TLS alert that the peer sent, if err is the error
+// this package returns when it receives an alert (a *net.OpError with Op
+// "remote error"). It also accepts an error wrapping an [AlertError], which
+// is how QUIC connections report alerts. Note that the latter also matches an
+// AlertError that a local VerifyConnection returned, so use it on the error
+// from the peer's side of the connection.
+func RemoteAlert(err error) (AlertError, bool) {
+	if oe, ok := errors.AsType[*net.OpError](err); ok && oe.Op == "remote error" {
+		if a, ok := oe.Err.(alert); ok {
+			return AlertError(a), true
+		}
+	}
+	if a, ok := errors.AsType[AlertError](err); ok {
+		return a, true
+	}
+	return 0, false
 }

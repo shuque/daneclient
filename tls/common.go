@@ -325,11 +325,13 @@ type ConnectionState struct {
 	// DANEClientName is, on a TLS 1.3 server, the ClientName received in the
 	// client's dane_clientid extension, or "" if there was none. It is set
 	// before VerifyConnection runs. It is unauthenticated until the caller
-	// has verified it.
+	// has verified it. It is always "" on a client, on TLS 1.2, and on
+	// resumed connections.
 	DANEClientName string
 
 	// DANEClientIDRequested is, on a client, whether the server's
-	// CertificateRequest advertised dane_clientid.
+	// CertificateRequest advertised dane_clientid. It is always false on
+	// servers, on TLS 1.2, and on resumed connections.
 	DANEClientIDRequested bool
 
 	// HelloRetryRequest indicates whether we sent a HelloRetryRequest if we
@@ -713,6 +715,10 @@ type Config struct {
 	// authenticate the name (for example with DNSSEC and TLSA records). An
 	// error returned from VerifyConnection that wraps an [AlertError] selects
 	// the alert sent.
+	//
+	// On a resumed connection no CertificateRequest is sent, so
+	// ConnectionState.DANEClientName is "". Callers that require DANE client
+	// authentication must set SessionTicketsDisabled.
 	DANEClientAuth bool
 
 	// DANEClientName, if set on a client, is sent as the ClientName in the
@@ -727,9 +733,10 @@ type Config struct {
 	// (with DANEClientName, possibly empty) on the leaf even if the
 	// CertificateRequest did not advertise it. testingDANEInCH makes a
 	// client add dane_clientid to its ClientHello.
-	testingForceDANEExt bool
-	testingDANEInCH     bool
-	testingDANEInCH2    bool // like testingDANEInCH, but only in the second ClientHello (after HRR)
+	testingForceDANEExt  bool
+	testingDANEInCH      bool
+	testingDANEServerExt uint8 // server: daneHook* bits; misplaced dane_clientid in that message
+	testingDANEInCH2     bool  // like testingDANEInCH, but only in the second ClientHello (after HRR)
 
 	// RootCAs defines the set of root certificate authorities
 	// that clients use when verifying server certificates.
@@ -1068,6 +1075,7 @@ func (c *Config) Clone() *Config {
 		testingForceDANEExt:                 c.testingForceDANEExt,
 		testingDANEInCH:                     c.testingDANEInCH,
 		testingDANEInCH2:                    c.testingDANEInCH2,
+		testingDANEServerExt:                c.testingDANEServerExt,
 		RootCAs:                             c.RootCAs,
 		NextProtos:                          c.NextProtos,
 		ServerName:                          c.ServerName,

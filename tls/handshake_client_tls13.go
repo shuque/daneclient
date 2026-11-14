@@ -236,6 +236,10 @@ func (hs *clientHandshakeStateTLS13) sendDummyChangeCipherSpec() error {
 func (hs *clientHandshakeStateTLS13) processHelloRetryRequest() error {
 	c := hs.c
 
+	if err := c.checkDANEMisplaced(hs.serverHello.daneClientID, "HelloRetryRequest"); err != nil {
+		return err
+	}
+
 	// The first ClientHello gets double-hashed into the transcript upon a
 	// HelloRetryRequest. (The idea is that the server might offload transcript
 	// storage to the client in the cookie.) See RFC 8446, Section 4.4.1.
@@ -301,7 +305,7 @@ func (hs *clientHandshakeStateTLS13) processHelloRetryRequest() error {
 	if hs.serverHello.cookie != nil {
 		hello.cookie = hs.serverHello.cookie
 	}
-	hello.daneClientIDInCH = c.config.testingDANEInCH2
+	hello.daneClientIDInCH = c.config.testingDANEInCH || c.config.testingDANEInCH2
 
 	if hs.serverHello.serverShare.group != 0 {
 		c.sendAlert(alertDecodeError)
@@ -413,6 +417,10 @@ func (hs *clientHandshakeStateTLS13) processHelloRetryRequest() error {
 
 func (hs *clientHandshakeStateTLS13) processServerHello() error {
 	c := hs.c
+
+	if err := c.checkDANEMisplaced(hs.serverHello.daneClientID, "ServerHello"); err != nil {
+		return err
+	}
 
 	if bytes.Equal(hs.serverHello.random, helloRetryRequestRandom) {
 		c.sendAlert(alertUnexpectedMessage)
@@ -534,6 +542,10 @@ func (hs *clientHandshakeStateTLS13) readServerParameters() error {
 	if !ok {
 		c.sendAlert(alertUnexpectedMessage)
 		return unexpectedMessageError(encryptedExtensions, msg)
+	}
+
+	if err := c.checkDANEMisplaced(encryptedExtensions.daneClientID, "EncryptedExtensions"); err != nil {
+		return err
 	}
 
 	if err := checkALPN(hs.hello.alpnProtocols, encryptedExtensions.alpnProtocol, c.quic != nil); err != nil {
@@ -845,6 +857,10 @@ func (c *Conn) handleNewSessionTicket(msg *newSessionTicketMsgTLS13) error {
 	if !c.isClient {
 		c.sendAlert(alertUnexpectedMessage)
 		return errors.New("tls: received new session ticket from a client")
+	}
+
+	if err := c.checkDANEMisplaced(msg.daneClientID, "NewSessionTicket"); err != nil {
+		return err
 	}
 
 	if c.config.SessionTicketsDisabled || c.config.ClientSessionCache == nil {

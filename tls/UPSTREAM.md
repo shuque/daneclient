@@ -91,7 +91,7 @@ Beyond the de-internalization above, all in TLS 1.3 except the VerifyConnection 
   copies both `Config` fields.
 - Server, TLS 1.3, client certificate requested, `DANEClientAuth`: the
   CertificateRequest carries an empty dane_clientid.
-- Server: dane_clientid in a ClientHello, including the second ClientHello
+- Server: dane_clientid in a ClientHello (even when `DANEClientAuth` is false), including the second ClientHello
   after a HelloRetryRequest, is `illegal_parameter`.
 - Server: dane_clientid in the client Certificate when our CertificateRequest
   did not advertise it is `unsupported_extension`; with a zero-length name or
@@ -104,7 +104,15 @@ Beyond the de-internalization above, all in TLS 1.3 except the VerifyConnection 
   does not run `validClientName` (so interop tests can send bad names); the
   only check is the 255-octet wire limit.
 - Client: dane_clientid in the server's Certificate is
-  `unsupported_extension`.
+  `unsupported_extension`. In ServerHello, HelloRetryRequest,
+  EncryptedExtensions or NewSessionTicket it is `illegal_parameter`
+  (RFC 8446 section 4.2).
+- `RemoteAlert(err)` (dane.go) extracts the alert a peer sent from the error.
+- Under QUIC a `VerifyConnection` error wrapping a non-fatal `AlertError` is
+  reported as-is by the QUIC layer; the fallback to `bad_certificate` applies
+  to TCP only.
+- Server test hook `testingDANEServerExt` (bitmask) puts dane_clientid in a
+  chosen server message; copied by `Clone`.
 - Duplicate dane_clientid in the leaf CertificateEntry is a decode error
   (RFC 8446 section 4.2). A duplicate in CertificateRequest is ignored.
 - CertificateRequest with a non-empty ClientName is a decode error. This is my
