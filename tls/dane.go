@@ -67,3 +67,66 @@ func readDANEClientName(extData *cryptobyte.String, name *string, emptyOnly bool
 	*name = string(n)
 	return true
 }
+
+// alertFromVerifyErr chooses the alert to send when Config.VerifyConnection
+// fails: the alert wrapped by err (as an AlertError), else bad_certificate.
+func alertFromVerifyErr(err error) alert {
+	if a, ok := errors.AsType[AlertError](err); ok {
+		return alert(a)
+	}
+	return alertBadCertificate
+}
+
+// checkDANEClientHello rejects a ClientHello carrying dane_clientid, which is
+// only allowed in CertificateRequest and Certificate.
+func (c *Conn) checkDANEClientHello(hello *clientHelloMsg) error {
+	if hello.daneClientIDInCH {
+		c.sendAlert(alertIllegalParameter)
+		return errors.New("tls: client sent dane_clientid in ClientHello")
+	}
+	return nil
+}
+
+// checkDANEClientCert validates the dane_clientid extension of a TLS 1.3
+// client Certificate message, and records the ClientName. It runs before any
+// certificate or VerifyConnection processing, so a bad name triggers no
+// further work. A message without the extension (including an empty
+// Certificate) leaves the name empty.
+func (c *Conn) checkDANEClientCert(m *certificateMsgTLS13) error {
+	if !m.daneClientID {
+		return nil
+	}
+	if !c.config.DANEClientAuth {
+		c.sendAlert(alertUnsupportedExtension)
+		return errors.New("tls: client Certificate carries unsupported extension dane_clientid (not requested)")
+	}
+	if m.daneClientName == "" {
+		c.sendAlert(alertHandshakeFailure)
+		return errors.New("tls: dane_clientid ClientName is empty")
+	}
+	if !validClientName(m.daneClientName) {
+		c.sendAlert(alertHandshakeFailure)
+		return errors.New("tls: dane_clientid ClientName is not a valid DNS name")
+	}
+	c.daneClientName = m.daneClientName
+	return nil
+}
+
+// checkDANEServerCert rejects a server Certificate carrying dane_clientid.
+func (c *Conn) checkDANEServerCert(m *certificateMsgTLS13) error {
+	if m.daneClientID {
+		c.sendAlert(alertUnsupportedExtension)
+		return errors.New("tls: server Certificate carries unsupported extension dane_clientid")
+	}
+	return nil
+}
+
+// setDANEClientID fills in the dane_clientid extension of a client's
+// Certificate message. crAdvertised is whether the server's CertificateRequest
+// carried the extension.
+func (m *certificateMsgTLS13) setDANEClientID(cfg *Config, crAdvertised bool) {
+	if cfg.testingForceDANEExt ||
+		(crAdvertised && cfg.DANEClientName != "" && len(m.certificate.Certificate) > 0) {
+		m.daneClientID, m.daneClientName = true, cfg.DANEClientName
+	}
+}

@@ -125,10 +125,10 @@ const (
 	extensionCookie                  uint16 = 44
 	extensionPSKModes                uint16 = 45
 	extensionCertificateAuthorities  uint16 = 47
-	extensionDANEClientID            uint16 = 63
 	extensionSignatureAlgorithmsCert uint16 = 50
 	extensionKeyShare                uint16 = 51
 	extensionQUICTransportParameters uint16 = 57
+	extensionDANEClientID            uint16 = 63
 	extensionRenegotiationInfo       uint16 = 0xff01
 	extensionECHOuterExtensions      uint16 = 0xfd00
 	extensionEncryptedClientHello    uint16 = 0xfe0d
@@ -321,6 +321,16 @@ type ConnectionState struct {
 	// and accepted by the server. Currently, ECH is supported only on the
 	// client side.
 	ECHAccepted bool
+
+	// DANEClientName is, on a TLS 1.3 server, the ClientName received in the
+	// client's dane_clientid extension, or "" if there was none. It is set
+	// before VerifyConnection runs. It is unauthenticated until the caller
+	// has verified it.
+	DANEClientName string
+
+	// DANEClientIDRequested is, on a client, whether the server's
+	// CertificateRequest advertised dane_clientid.
+	DANEClientIDRequested bool
 
 	// HelloRetryRequest indicates whether we sent a HelloRetryRequest if we
 	// are a server, or if we received a HelloRetryRequest if we are a client.
@@ -692,6 +702,31 @@ type Config struct {
 	// settings.
 	VerifyConnection func(ConnectionState) error
 
+	// DANEClientAuth, if set on a server that requests a client certificate
+	// in TLS 1.3, adds the (empty) dane_clientid extension to the
+	// CertificateRequest (draft-ietf-dance-client-auth). The ClientName the
+	// client sends is then available as [ConnectionState.DANEClientName]
+	// when VerifyConnection runs. It is up to VerifyConnection to
+	// authenticate the name (for example with DNSSEC and TLSA records). An
+	// error returned from VerifyConnection that wraps an [AlertError] selects
+	// the alert sent.
+	DANEClientAuth bool
+
+	// DANEClientName, if set on a client, is sent as the ClientName in the
+	// dane_clientid extension of the leaf CertificateEntry, when the server's
+	// CertificateRequest advertised the extension and a certificate is sent.
+	// The client does not validate the name locally, only that it is at most
+	// 255 octets, so that malformed names can be sent deliberately in
+	// interoperability tests.
+	DANEClientName string
+
+	// Test hooks: testingForceDANEExt makes a client send dane_clientid
+	// (with DANEClientName, possibly empty) on the leaf even if the
+	// CertificateRequest did not advertise it. testingDANEInCH makes a
+	// client add dane_clientid to its ClientHello.
+	testingForceDANEExt bool
+	testingDANEInCH     bool
+
 	// RootCAs defines the set of root certificate authorities
 	// that clients use when verifying server certificates.
 	// If RootCAs is nil, TLS uses the host's root CA set.
@@ -1024,6 +1059,10 @@ func (c *Config) Clone() *Config {
 		GetEncryptedClientHelloKeys:         c.GetEncryptedClientHelloKeys,
 		VerifyPeerCertificate:               c.VerifyPeerCertificate,
 		VerifyConnection:                    c.VerifyConnection,
+		DANEClientAuth:                      c.DANEClientAuth,
+		DANEClientName:                      c.DANEClientName,
+		testingForceDANEExt:                 c.testingForceDANEExt,
+		testingDANEInCH:                     c.testingDANEInCH,
 		RootCAs:                             c.RootCAs,
 		NextProtos:                          c.NextProtos,
 		ServerName:                          c.ServerName,

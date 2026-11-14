@@ -42,8 +42,9 @@ func ExpandLabel[H hash.Hash](hash func() H, secret []byte, label string, contex
 	out, err := hkdf.Expand(hash, secret, string(hkdfLabel), length)
 	if err != nil {
 		// The public crypto/hkdf only fails for a length above 255 hash
-		// blocks or for non-approved inputs in FIPS 140-only mode, neither
-		// of which crypto/tls produces.
+		// blocks, or for non-approved inputs under GODEBUG=fips140=only
+		// (see UPSTREAM.md, Known limitations). crypto/tls produces
+		// neither with the default settings.
 		panic("tls13: " + err.Error())
 	}
 	return out

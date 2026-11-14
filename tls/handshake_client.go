@@ -205,6 +205,8 @@ func (c *Conn) makeClientHello() (*clientHelloMsg, *keySharePrivateKeys, *echCli
 		}
 	}
 
+	hello.daneClientIDInCH = c.config.testingDANEInCH
+
 	return hello, keyShareKeys, ech, nil
 }
 
@@ -588,7 +590,7 @@ func (hs *clientHandshakeState) handshake() error {
 		// they don't call verifyServerCertificate. See Issue 31641.
 		if c.config.VerifyConnection != nil {
 			if err := c.config.VerifyConnection(c.connectionStateLocked()); err != nil {
-				c.sendAlert(alertBadCertificate)
+				c.sendAlert(alertFromVerifyErr(err))
 				return err
 			}
 		}
@@ -1198,7 +1200,7 @@ func (c *Conn) verifyServerCertificate(certificates [][]byte) error {
 
 	if c.config.VerifyConnection != nil && !echRejected {
 		if err := c.config.VerifyConnection(c.connectionStateLocked()); err != nil {
-			c.sendAlert(alertBadCertificate)
+			c.sendAlert(alertFromVerifyErr(err))
 			return err
 		}
 	}

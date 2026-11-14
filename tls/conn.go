@@ -121,6 +121,9 @@ type Conn struct {
 	activeCall atomic.Int32
 
 	tmp [16]byte
+
+	daneClientName        string // server: ClientName from dane_clientid
+	daneClientIDRequested bool   // client: server CR advertised dane_clientid
 }
 
 // Access to net.Conn methods.
@@ -1648,6 +1651,8 @@ func (c *Conn) connectionStateLocked() ConnectionState {
 		state.ekm = c.ekm
 	}
 	state.ECHAccepted = c.echAccepted
+	state.DANEClientName = c.daneClientName
+	state.DANEClientIDRequested = c.daneClientIDRequested
 	return state
 }
 

@@ -110,6 +110,10 @@ func (hs *serverHandshakeStateTLS13) processClientHello() error {
 
 	hs.hello = new(serverHelloMsg)
 
+	if err := c.checkDANEClientHello(hs.clientHello); err != nil {
+		return err
+	}
+
 	// TLS 1.3 froze the ServerHello.legacy_version field, and uses
 	// supported_versions instead. See RFC 8446, sections 4.1.3 and 4.2.1.
 	hs.hello.vers = VersionTLS12
@@ -836,6 +840,7 @@ func (hs *serverHandshakeStateTLS13) sendServerCertificate() error {
 		certReq := new(certificateRequestMsgTLS13)
 		certReq.ocspStapling = true
 		certReq.scts = true
+		certReq.daneClientID = c.config.DANEClientAuth
 		certReq.supportedSignatureAlgorithms = supportedSignatureAlgorithms(c.vers, c.vers)
 		certReq.supportedSignatureAlgorithmsCert = supportedSignatureAlgorithmsCert(c.vers, c.vers)
 		if c.config.ClientCAs != nil {
@@ -1036,7 +1041,7 @@ func (hs *serverHandshakeStateTLS13) readClientCertificate() error {
 		// the server requested a client certificate.
 		if c.config.VerifyConnection != nil {
 			if err := c.config.VerifyConnection(c.connectionStateLocked()); err != nil {
-				c.sendAlert(alertBadCertificate)
+				c.sendAlert(alertFromVerifyErr(err))
 				return err
 			}
 		}
@@ -1057,13 +1062,17 @@ func (hs *serverHandshakeStateTLS13) readClientCertificate() error {
 		return unexpectedMessageError(certMsg, msg)
 	}
 
+	if err := c.checkDANEClientCert(certMsg); err != nil {
+		return err
+	}
+
 	if err := c.processCertsFromClient(certMsg.certificate); err != nil {
 		return err
 	}
 
 	if c.config.VerifyConnection != nil {
 		if err := c.config.VerifyConnection(c.connectionStateLocked()); err != nil {
-			c.sendAlert(alertBadCertificate)
+			c.sendAlert(alertFromVerifyErr(err))
 			return err
 		}
 	}

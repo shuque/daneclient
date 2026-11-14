@@ -599,7 +599,7 @@ func (hs *clientHandshakeStateTLS13) readServerCertificate() error {
 		// they don't call verifyServerCertificate. See Issue 31641.
 		if c.config.VerifyConnection != nil {
 			if err := c.config.VerifyConnection(c.connectionStateLocked()); err != nil {
-				c.sendAlert(alertBadCertificate)
+				c.sendAlert(alertFromVerifyErr(err))
 				return err
 			}
 		}
@@ -614,6 +614,7 @@ func (hs *clientHandshakeStateTLS13) readServerCertificate() error {
 	certReq, ok := msg.(*certificateRequestMsgTLS13)
 	if ok {
 		hs.certReq = certReq
+		c.daneClientIDRequested = certReq.daneClientID
 
 		msg, err = c.readHandshake(hs.transcript)
 		if err != nil {
@@ -625,6 +626,9 @@ func (hs *clientHandshakeStateTLS13) readServerCertificate() error {
 	if !ok {
 		c.sendAlert(alertUnexpectedMessage)
 		return unexpectedMessageError(certMsg, msg)
+	}
+	if err := c.checkDANEServerCert(certMsg); err != nil {
+		return err
 	}
 	if len(certMsg.certificate.Certificate) == 0 {
 		c.sendAlert(alertDecodeError)
@@ -766,6 +770,7 @@ func (hs *clientHandshakeStateTLS13) sendClientCertificate() error {
 	certMsg.certificate = *cert
 	certMsg.scts = hs.certReq.scts && len(cert.SignedCertificateTimestamps) > 0
 	certMsg.ocspStapling = hs.certReq.ocspStapling && len(cert.OCSPStaple) > 0
+	certMsg.setDANEClientID(c.config, hs.certReq.daneClientID)
 
 	if _, err := hs.c.writeHandshakeRecord(certMsg, hs.transcript); err != nil {
 		return err

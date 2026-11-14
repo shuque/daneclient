@@ -974,11 +974,11 @@ func TestCloneNonFuncFields(t *testing.T) {
 			f.Set(reflect.ValueOf(io.Writer(os.Stdout)))
 		case "NextProtos":
 			f.Set(reflect.ValueOf([]string{"a", "b"}))
-		case "ServerName":
+		case "ServerName", "DANEClientName":
 			f.Set(reflect.ValueOf("b"))
 		case "ClientAuth":
 			f.Set(reflect.ValueOf(VerifyClientCertIfGiven))
-		case "InsecureSkipVerify", "SessionTicketsDisabled", "DynamicRecordSizingDisabled", "PreferServerCipherSuites":
+		case "InsecureSkipVerify", "SessionTicketsDisabled", "DynamicRecordSizingDisabled", "PreferServerCipherSuites", "DANEClientAuth":
 			f.Set(reflect.ValueOf(true))
 		case "MinVersion", "MaxVersion":
 			f.Set(reflect.ValueOf(uint16(VersionTLS12)))
@@ -996,7 +996,7 @@ func TestCloneNonFuncFields(t *testing.T) {
 			f.Set(reflect.ValueOf([]EncryptedClientHelloKey{
 				{Config: []byte{1}, PrivateKey: []byte{1}},
 			}))
-		case "mutex", "autoSessionTicketKeys", "sessionTicketKeys":
+		case "mutex", "autoSessionTicketKeys", "sessionTicketKeys", "testingForceDANEExt", "testingDANEInCH":
 			continue // these are unexported fields that are handled separately
 		default:
 			t.Errorf("all fields must be accounted for, but saw unknown field %q", fn)

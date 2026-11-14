@@ -2,8 +2,19 @@ package tls
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"errors"
+	"fmt"
+	"io"
+	"math/big"
+	"net"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDANECertificateRequestRoundTrip(t *testing.T) {
@@ -135,5 +146,257 @@ func TestValidClientName(t *testing.T) {
 		if validClientName(n) {
 			t.Errorf("%q should be invalid", n)
 		}
+	}
+}
+
+func TestDANECertificateDuplicateRejected(t *testing.T) {
+	one := []byte{0x00, 0x3f, 0x00, 0x02, 0x01, 'a'}
+	ext := append(append([]byte{}, one...), one...)
+	entry := append([]byte{0, 0, 1, 9, 0, byte(len(ext))}, ext...)
+	msg := append([]byte{0, 0, byte(len(entry))}, entry...)
+	msg = append([]byte{0}, msg...)
+	data := append([]byte{typeCertificate, 0, 0, byte(len(msg))}, msg...)
+	var got certificateMsgTLS13
+	if got.unmarshal(data) {
+		t.Fatal("duplicate dane_clientid in leaf entry accepted")
+	}
+}
+
+// --- handshake behaviour ---
+
+func daneTestCert(t *testing.T) Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "dane test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+type daneResult struct {
+	serverState, clientState ConnectionState
+	serverErr, clientErr     error
+}
+
+// runDANE does a handshake over a local TCP pipe. clientErr includes any
+// alert the client received after its handshake finished.
+func runDANE(t *testing.T, cli, srv *Config) daneResult {
+	t.Helper()
+	var r daneResult
+	c, s := localPipe(t)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		cc := Client(c, cli)
+		if err := cc.Handshake(); err != nil {
+			r.clientErr = err
+			c.Close()
+			return
+		}
+		r.clientState = cc.ConnectionState()
+		_, err := io.ReadAll(cc)
+		r.clientErr = err
+		c.Close()
+	}()
+	sc := Server(s, srv)
+	r.serverErr = sc.Handshake()
+	if r.serverErr == nil {
+		r.serverState = sc.ConnectionState()
+		sc.Close()
+	}
+	s.Close()
+	<-done
+	return r
+}
+
+func daneConfigs(t *testing.T) (cli, srv *Config) {
+	cert := daneTestCert(t)
+	cli = &Config{InsecureSkipVerify: true, MinVersion: VersionTLS13, Certificates: []Certificate{cert}}
+	srv = &Config{Certificates: []Certificate{daneTestCert(t)}, MinVersion: VersionTLS13, ClientAuth: RequireAnyClientCert}
+	return
+}
+
+func wantAlert(t *testing.T, err error, want alert) {
+	t.Helper()
+	a, ok := errors.AsType[alert](err)
+	if !ok || a != want {
+		t.Fatalf("got error %v, want alert %d", err, want)
+	}
+}
+
+func TestDANEHappyPath(t *testing.T) {
+	const name = "dev1._device.example.com"
+	cli, srv := daneConfigs(t)
+	srv.DANEClientAuth = true
+	cli.DANEClientName = name
+	var seen string
+	srv.VerifyConnection = func(cs ConnectionState) error { seen = cs.DANEClientName; return nil }
+	r := runDANE(t, cli, srv)
+	if r.serverErr != nil || r.clientErr != nil {
+		t.Fatalf("server %v, client %v", r.serverErr, r.clientErr)
+	}
+	if seen != name || r.serverState.DANEClientName != name {
+		t.Fatalf("VerifyConnection saw %q, final state %q", seen, r.serverState.DANEClientName)
+	}
+	if !r.clientState.DANEClientIDRequested {
+		t.Fatal("client DANEClientIDRequested false")
+	}
+}
+
+func TestDANEServerNotAdvertising(t *testing.T) {
+	cli, srv := daneConfigs(t)
+	cli.DANEClientName = "dev1._device.example.com"
+	r := runDANE(t, cli, srv)
+	if r.serverErr != nil || r.clientErr != nil {
+		t.Fatalf("server %v, client %v", r.serverErr, r.clientErr)
+	}
+	if r.serverState.DANEClientName != "" || r.clientState.DANEClientIDRequested {
+		t.Fatalf("name %q requested %v", r.serverState.DANEClientName, r.clientState.DANEClientIDRequested)
+	}
+}
+
+func TestDANEUnsolicited(t *testing.T) {
+	cli, srv := daneConfigs(t)
+	cli.DANEClientName = "dev1._device.example.com"
+	cli.testingForceDANEExt = true
+	r := runDANE(t, cli, srv)
+	if r.serverErr == nil || !strings.Contains(r.serverErr.Error(), "unsupported extension") {
+		t.Fatalf("server error %v", r.serverErr)
+	}
+	wantAlert(t, r.clientErr, alertUnsupportedExtension)
+}
+
+func TestDANEZeroLengthName(t *testing.T) {
+	cli, srv := daneConfigs(t)
+	srv.DANEClientAuth = true
+	cli.testingForceDANEExt = true // name ""
+	r := runDANE(t, cli, srv)
+	if r.serverErr == nil {
+		t.Fatal("server accepted zero-length name")
+	}
+	wantAlert(t, r.clientErr, alertHandshakeFailure)
+}
+
+func TestDANEInvalidName(t *testing.T) {
+	cli, srv := daneConfigs(t)
+	srv.DANEClientAuth = true
+	cli.DANEClientName = "a..example.com"
+	calls := 0
+	srv.VerifyConnection = func(ConnectionState) error { calls++; return nil }
+	r := runDANE(t, cli, srv)
+	if r.serverErr == nil {
+		t.Fatal("server accepted invalid name")
+	}
+	wantAlert(t, r.clientErr, alertHandshakeFailure)
+	if calls != 0 {
+		t.Fatalf("VerifyConnection called %d times", calls)
+	}
+}
+
+func TestDANEInClientHello(t *testing.T) {
+	cli, srv := daneConfigs(t)
+	cli.testingDANEInCH = true
+	r := runDANE(t, cli, srv)
+	if r.serverErr == nil {
+		t.Fatal("server accepted dane_clientid in ClientHello")
+	}
+	wantAlert(t, r.clientErr, alertIllegalParameter)
+}
+
+func TestDANEClientNoCert(t *testing.T) {
+	cli, srv := daneConfigs(t)
+	cli.Certificates = nil
+	cli.DANEClientName = "dev1._device.example.com"
+	srv.ClientAuth = RequestClientCert
+	srv.DANEClientAuth = true
+	r := runDANE(t, cli, srv)
+	if r.serverErr != nil || r.clientErr != nil {
+		t.Fatalf("server %v, client %v", r.serverErr, r.clientErr)
+	}
+	if r.serverState.DANEClientName != "" {
+		t.Fatalf("server saw %q", r.serverState.DANEClientName)
+	}
+}
+
+func TestDANENoCertRequest(t *testing.T) {
+	cli, srv := daneConfigs(t)
+	cli.DANEClientName = "dev1._device.example.com"
+	srv.ClientAuth = NoClientCert
+	srv.DANEClientAuth = true
+	r := runDANE(t, cli, srv)
+	if r.serverErr != nil || r.clientErr != nil {
+		t.Fatalf("server %v, client %v", r.serverErr, r.clientErr)
+	}
+	if r.clientState.DANEClientIDRequested || r.serverState.DANEClientName != "" {
+		t.Fatal("unexpected DANE state")
+	}
+}
+
+func TestDANETLS12Ignored(t *testing.T) {
+	cli, srv := daneConfigs(t)
+	cli.MinVersion, cli.MaxVersion = VersionTLS12, VersionTLS12
+	srv.MinVersion, srv.MaxVersion = VersionTLS12, VersionTLS12
+	srv.DANEClientAuth = true
+	cli.DANEClientName = "dev1._device.example.com"
+	r := runDANE(t, cli, srv)
+	if r.serverErr != nil || r.clientErr != nil {
+		t.Fatalf("server %v, client %v", r.serverErr, r.clientErr)
+	}
+	if r.serverState.DANEClientName != "" || r.clientState.DANEClientIDRequested {
+		t.Fatal("DANE state set on TLS 1.2")
+	}
+}
+
+func TestDANEServerCertCarries63(t *testing.T) {
+	// A server that (wrongly) sends dane_clientid in its Certificate must be
+	// rejected by the client with unsupported_extension. Exercise the helper
+	// that the client handshake uses.
+	cp, sp := net.Pipe()
+	go io.Copy(io.Discard, sp)
+	defer cp.Close()
+	c := Client(cp, &Config{})
+	if err := c.checkDANEServerCert(&certificateMsgTLS13{daneClientID: true}); err == nil {
+		t.Fatal("no error for dane_clientid in server Certificate")
+	}
+	if err := c.checkDANEServerCert(&certificateMsgTLS13{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVerifyConnectionAlertError(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want alert
+	}{
+		{fmt.Errorf("no: %w", AlertError(alertHandshakeFailure)), alertHandshakeFailure},
+		{errors.New("no"), alertBadCertificate},
+	} {
+		cli, srv := daneConfigs(t)
+		srv.VerifyConnection = func(ConnectionState) error { return tc.err }
+		r := runDANE(t, cli, srv)
+		if r.serverErr == nil {
+			t.Fatal("server accepted")
+		}
+		wantAlert(t, r.clientErr, tc.want)
+	}
+}
+
+func TestDANEConfigClone(t *testing.T) {
+	c := &Config{DANEClientAuth: true, DANEClientName: "x._y.example.com", testingForceDANEExt: true, testingDANEInCH: true}
+	d := c.Clone()
+	if !d.DANEClientAuth || d.DANEClientName != c.DANEClientName || !d.testingForceDANEExt || !d.testingDANEInCH {
+		t.Fatalf("clone lost fields: %+v", d)
 	}
 }

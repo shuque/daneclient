@@ -579,7 +579,7 @@ func (hs *serverHandshakeState) doResumeHandshake() error {
 
 	if c.config.VerifyConnection != nil {
 		if err := c.config.VerifyConnection(c.connectionStateLocked()); err != nil {
-			c.sendAlert(alertBadCertificate)
+			c.sendAlert(alertFromVerifyErr(err))
 			return err
 		}
 	}
@@ -717,7 +717,7 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 	}
 	if c.config.VerifyConnection != nil {
 		if err := c.config.VerifyConnection(c.connectionStateLocked()); err != nil {
-			c.sendAlert(alertBadCertificate)
+			c.sendAlert(alertFromVerifyErr(err))
 			return err
 		}
 	}

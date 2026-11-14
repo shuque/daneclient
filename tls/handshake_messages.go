@@ -70,7 +70,6 @@ func readUint24LengthPrefixed(s *cryptobyte.String, out *[]byte) bool {
 }
 
 type clientHelloMsg struct {
-	daneClientIDInCH                 bool // dane_clientid seen (not allowed in ClientHello)
 	original                         []byte
 	vers                             uint16
 	random                           []byte
@@ -101,6 +100,8 @@ type clientHelloMsg struct {
 	encryptedClientHello             []byte
 	// extensions are only populated on the server-side of a handshake
 	extensions []uint16
+	// dane_clientid seen (illegal in a ClientHello), or to be sent (tests)
+	daneClientIDInCH bool
 }
 
 func (m *clientHelloMsg) marshalMsg(echInner bool) ([]byte, error) {
@@ -318,6 +319,9 @@ func (m *clientHelloMsg) marshalMsg(echInner bool) ([]byte, error) {
 				}
 			})
 		})
+	}
+	if m.daneClientIDInCH {
+		addDANEClientID(&exts, "") // test hook only; see testingDANEInCH
 	}
 	// pre_shared_key must be the last extension
 	if len(m.pskIdentities) > 0 && (echInner || len(m.encryptedClientHello) == 0 || bytes.Equal(m.encryptedClientHello, []byte{byte(innerECHExt)})) {
@@ -1482,7 +1486,7 @@ type certificateMsgTLS13 struct {
 }
 
 func (m *certificateMsgTLS13) marshal() ([]byte, error) {
-	if len(m.daneClientName) > 255 {
+	if m.daneClientID && len(m.daneClientName) > 255 {
 		return nil, errDANEClientNameTooLong
 	}
 	var b cryptobyte.Builder
@@ -1614,7 +1618,7 @@ func unmarshalCertificate(s *cryptobyte.String, certificate *Certificate, dane *
 				if dane == nil {
 					continue // treat like an unknown extension
 				}
-				if !readDANEClientName(&extData, &dane.name, false) {
+				if dane.present || !readDANEClientName(&extData, &dane.name, false) {
 					return false
 				}
 				dane.present = true
