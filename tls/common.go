@@ -125,6 +125,7 @@ const (
 	extensionCookie                  uint16 = 44
 	extensionPSKModes                uint16 = 45
 	extensionCertificateAuthorities  uint16 = 47
+	extensionDANEClientID            uint16 = 63
 	extensionSignatureAlgorithmsCert uint16 = 50
 	extensionKeyShare                uint16 = 51
 	extensionQUICTransportParameters uint16 = 57

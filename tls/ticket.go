@@ -142,7 +142,7 @@ func (s *SessionState) Bytes() ([]byte, error) {
 		Certificate:                 certificatesToBytesSlice(s.peerCertificates),
 		OCSPStaple:                  s.ocspResponse,
 		SignedCertificateTimestamps: s.scts,
-	})
+	}, nil)
 	b.AddUint24LengthPrefixed(func(b *cryptobyte.Builder) {
 		for _, chain := range s.verifiedChains {
 			b.AddUint24LengthPrefixed(func(b *cryptobyte.Builder) {
@@ -199,7 +199,7 @@ func ParseSessionState(data []byte) (*SessionState, error) {
 		!s.ReadUint8(&extMasterSecret) ||
 		!s.ReadUint8(&earlyData) ||
 		len(ss.secret) == 0 ||
-		!unmarshalCertificate(&s, &cert) {
+		!unmarshalCertificate(&s, &cert, nil) {
 		return nil, errors.New("tls: invalid session encoding")
 	}
 	for !extra.Empty() {

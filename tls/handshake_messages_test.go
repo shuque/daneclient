@@ -482,6 +482,7 @@ func (*certificateRequestMsgTLS13) Generate(rand *rand.Rand, size int) reflect.V
 			m.certificateAuthorities[i] = randomBytes(rand.Intn(10)+1, rand)
 		}
 	}
+	m.daneClientID = rand.Intn(2) == 0
 	return reflect.ValueOf(m)
 }
 
@@ -501,6 +502,10 @@ func (*certificateMsgTLS13) Generate(rand *rand.Rand, size int) reflect.Value {
 			m.certificate.SignedCertificateTimestamps = append(
 				m.certificate.SignedCertificateTimestamps, randomBytes(rand.Intn(500)+1, rand))
 		}
+	}
+	if rand.Intn(2) == 0 {
+		m.daneClientID = true
+		m.daneClientName = string(randomBytes(rand.Intn(256), rand))
 	}
 	return reflect.ValueOf(m)
 }

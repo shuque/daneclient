@@ -70,6 +70,7 @@ func readUint24LengthPrefixed(s *cryptobyte.String, out *[]byte) bool {
 }
 
 type clientHelloMsg struct {
+	daneClientIDInCH                 bool // dane_clientid seen (not allowed in ClientHello)
 	original                         []byte
 	vers                             uint16
 	random                           []byte
@@ -668,6 +669,9 @@ func (m *clientHelloMsg) unmarshal(data []byte) bool {
 			if !extData.ReadBytes(&m.encryptedClientHello, len(extData)) {
 				return false
 			}
+		case extensionDANEClientID:
+			m.daneClientIDInCH = true // illegal in ClientHello; see handshake code
+			continue
 		default:
 			// Ignore unknown extensions.
 			continue
@@ -1250,6 +1254,7 @@ type certificateRequestMsgTLS13 struct {
 	supportedSignatureAlgorithms     []SignatureScheme
 	supportedSignatureAlgorithmsCert []SignatureScheme
 	certificateAuthorities           [][]byte
+	daneClientID                     bool
 }
 
 func (m *certificateRequestMsgTLS13) marshal() ([]byte, error) {
@@ -1305,6 +1310,9 @@ func (m *certificateRequestMsgTLS13) marshal() ([]byte, error) {
 						}
 					})
 				})
+			}
+			if m.daneClientID {
+				addDANEClientID(b, "")
 			}
 		})
 	})
@@ -1375,6 +1383,12 @@ func (m *certificateRequestMsgTLS13) unmarshal(data []byte) bool {
 				}
 				m.certificateAuthorities = append(m.certificateAuthorities, ca)
 			}
+		case extensionDANEClientID:
+			var name string
+			if !readDANEClientName(&extData, &name, true) {
+				return false
+			}
+			m.daneClientID = true
 		default:
 			// Ignore unknown extensions.
 			continue
@@ -1462,9 +1476,15 @@ type certificateMsgTLS13 struct {
 	certificate  Certificate
 	ocspStapling bool
 	scts         bool
+
+	daneClientID   bool   // dane_clientid present on the leaf entry
+	daneClientName string // its ClientName (may be empty)
 }
 
 func (m *certificateMsgTLS13) marshal() ([]byte, error) {
+	if len(m.daneClientName) > 255 {
+		return nil, errDANEClientNameTooLong
+	}
 	var b cryptobyte.Builder
 	b.AddUint8(typeCertificate)
 	b.AddUint24LengthPrefixed(func(b *cryptobyte.Builder) {
@@ -1477,13 +1497,13 @@ func (m *certificateMsgTLS13) marshal() ([]byte, error) {
 		if !m.scts {
 			certificate.SignedCertificateTimestamps = nil
 		}
-		marshalCertificate(b, certificate)
+		marshalCertificate(b, certificate, &daneExt{m.daneClientID, m.daneClientName})
 	})
 
 	return b.Bytes()
 }
 
-func marshalCertificate(b *cryptobyte.Builder, certificate Certificate) {
+func marshalCertificate(b *cryptobyte.Builder, certificate Certificate, dane *daneExt) {
 	b.AddUint24LengthPrefixed(func(b *cryptobyte.Builder) {
 		for i, cert := range certificate.Certificate {
 			b.AddUint24LengthPrefixed(func(b *cryptobyte.Builder) {
@@ -1515,6 +1535,9 @@ func marshalCertificate(b *cryptobyte.Builder, certificate Certificate) {
 						})
 					})
 				}
+				if dane != nil && dane.present {
+					addDANEClientID(b, dane.name)
+				}
 			})
 		}
 	})
@@ -1525,20 +1548,22 @@ func (m *certificateMsgTLS13) unmarshal(data []byte) bool {
 	s := cryptobyte.String(data)
 
 	var context cryptobyte.String
+	var dane daneExt
 	if !s.Skip(4) || // message type and uint24 length field
 		!s.ReadUint8LengthPrefixed(&context) || !context.Empty() ||
-		!unmarshalCertificate(&s, &m.certificate) ||
+		!unmarshalCertificate(&s, &m.certificate, &dane) ||
 		!s.Empty() {
 		return false
 	}
 
 	m.scts = m.certificate.SignedCertificateTimestamps != nil
 	m.ocspStapling = m.certificate.OCSPStaple != nil
+	m.daneClientID, m.daneClientName = dane.present, dane.name
 
 	return true
 }
 
-func unmarshalCertificate(s *cryptobyte.String, certificate *Certificate) bool {
+func unmarshalCertificate(s *cryptobyte.String, certificate *Certificate, dane *daneExt) bool {
 	var certList cryptobyte.String
 	if !s.ReadUint24LengthPrefixed(&certList) {
 		return false
@@ -1585,6 +1610,14 @@ func unmarshalCertificate(s *cryptobyte.String, certificate *Certificate) bool {
 					certificate.SignedCertificateTimestamps = append(
 						certificate.SignedCertificateTimestamps, sct)
 				}
+			case extensionDANEClientID:
+				if dane == nil {
+					continue // treat like an unknown extension
+				}
+				if !readDANEClientName(&extData, &dane.name, false) {
+					return false
+				}
+				dane.present = true
 			default:
 				// Ignore unknown extensions.
 				continue
