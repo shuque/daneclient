@@ -58,6 +58,7 @@ Scope and limits:
 | `cmd/danecert/` | Generates client keys and certificates, and prints the TLSA record to publish. |
 | `cmd/daneserver/` | HTTPS demo server that authenticates clients by DANE. |
 | `cmd/daneclient/` | HTTPS demo client that presents a ClientName. |
+| `Design.md` | How the pieces fit together, the design decisions, and the open questions. |
 | `docs/testing.md` | A runbook for live and interop testing against real DNSSEC-signed TLSA records. |
 
 ## Dependencies

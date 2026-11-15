@@ -144,7 +144,7 @@ Config fields (`DANEClientAuth`, `DANEClientName` and the unexported hooks).
   output).
 - ClientName is not stored in session tickets. On a resumed connection
   `DANEClientName` is `""`. Callers needing DANE client auth must disable
-  resumption (`SessionTicketsDisabled`). Open spec question; see `CLAUDE.md`.
+  resumption (`SessionTicketsDisabled`). Open spec question; see `Design.md` at the repository root.
 - Under `GODEBUG=fips140=only`, AES-GCM cipher suites panic, because public
   `cipher.NewGCM` returns an error there and the fork has no FIPS-only path.
 - The godebug stub also ignores `//go:debug` directives and the consumer's
