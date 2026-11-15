@@ -2,10 +2,10 @@
 
 A Go reference implementation of
 [draft-ietf-dance-client-auth](https://datatracker.ietf.org/doc/draft-ietf-dance-client-auth/),
-TLS client authentication with DANE.
+TLS client authentication with DANE TLSA records.
 
 It is a prototype, built to check conformance with the specification and
-to run interop tests. It is not a production library.
+to run interop tests. It is not intended to be a production library.
 
 ## What it does
 
@@ -40,11 +40,11 @@ This repository provides:
 
 Scope and limits:
 
-- TLS 1.3 only.
+- TLS 1.3 only (required by the spec).
 - All four TLSA certificate usages are supported: DANE-EE (3), DANE-TA (2),
   PKIX-EE (1) and PKIX-TA (0). Interop testing so far uses DANE-EE and
   DANE-TA.
-- Session resumption is disabled, so every connection does a full
+- Session resumption is presently disabled, so every connection does a full
   handshake and a full DANE check.
 - HTTP/1.1 only in the HTTP adapters.
 - Out of scope: raw public keys (RFC 7250) and DTLS.
