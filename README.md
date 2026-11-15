@@ -66,11 +66,7 @@ Scope and limits:
   based on Go 1.27.4 and builds outside GOROOT.
 - **[github.com/shuque/dane/v2](https://github.com/shuque/dane)** does
   the TLSA lookups (with DNSSEC AD-bit checking) and matches TLSA records
-  against certificate chains.
-  - Until `v2.0.0` is tagged, `go.mod` contains
-    `replace github.com/shuque/dane/v2 => ../dane/v2`. You need the
-    `dane` repository checked out next to this one (its `master` branch
-    contains the `v2/` module).
+  against certificate chains. `go.mod` pins `v2.0.0`.
 - **[github.com/miekg/dns](https://github.com/miekg/dns)**,
   **golang.org/x/crypto** and **golang.org/x/sys**. These are fetched
   automatically by `go build`.
@@ -83,10 +79,9 @@ For real use (but not for the unit tests) you also need:
 
 ## Installation
 
-Clone this repository and the `dane` repository side by side:
+Clone this repository:
 
     git clone https://github.com/shuque/daneclient
-    git clone https://github.com/shuque/dane
     cd daneclient
 
 Build everything, and put the three programs in `bin/`:

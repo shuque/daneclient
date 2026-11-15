@@ -10,5 +10,3 @@ require (
 )
 
 require golang.org/x/net v0.62.0 // indirect
-
-replace github.com/shuque/dane/v2 => ../dane/v2
