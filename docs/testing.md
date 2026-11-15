@@ -23,11 +23,16 @@ publish under.
   PKIX by default, so for a throwaway server make a self-signed one and
   pass it to the client with `-cafile`:
 
+      mkdir -p testcreds
       openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
-        -keyout server.key -out server.crt -subj /CN=localhost -days 30 \
+        -keyout testcreds/server.key -out testcreds/server.crt -subj /CN=localhost -days 30 \
         -addext subjectAltName=DNS:localhost
 
 ## 1. Generate client material
+
+The examples keep all test credentials under `testcreds/` at the
+repository root. That directory is in `.gitignore`, so private keys
+cannot be committed by accident.
 
 `danecert` writes `client.key` and `client.crt` (and `ca.key`/`ca.crt` for
 a CA, and `chain.pem` for `issue`: the leaf followed by the CA) into the `-out` directory, and prints the TLSA record to publish on
@@ -36,7 +41,7 @@ stdout.
 DANE-EE (usage 3, self-signed client certificate; the name need not appear
 in the certificate, so an underscore name is fine):
 
-    danecert ee -name dev1._device.huque.com -out ee
+    danecert ee -name dev1._device.huque.com -out testcreds/ee
 
 prints a line like
 
@@ -44,8 +49,8 @@ prints a line like
 
 DANE-TA (usage 2, certificate issued by a private CA):
 
-    danecert ca -cn "Test Client CA" -out ca
-    danecert issue -ca ca -name dev1.dane-test.huque.com -out ta
+    danecert ca -cn "Test Client CA" -out testcreds/ca
+    danecert issue -ca testcreds/ca -name dev1.dane-test.huque.com -out testcreds/ta
 
 prints a line like
 
@@ -78,9 +83,9 @@ touch no network, unless `DANECLIENT_LIVE=1`.
 |---|---|
 | `DANECLIENT_LIVE` | `1` enables the tests |
 | `DANECLIENT_LIVE_RESOLVER` | validating resolver `host:port`; required when enabled (the tests fail without it) |
-| `DANECLIENT_LIVE_EE_NAME`, `_EE_CERT`, `_EE_KEY` | the DANE-EE name, `ee/client.crt`, `ee/client.key` |
-| `DANECLIENT_LIVE_TA_NAME`, `_TA_CERT`, `_TA_KEY` | the DANE-TA name, `ta/client.crt`, `ta/client.key` |
-| `DANECLIENT_LIVE_TA_CHAIN` | PEM file with the CA certificate to send (`ca/ca.crt`) |
+| `DANECLIENT_LIVE_EE_NAME`, `_EE_CERT`, `_EE_KEY` | the DANE-EE name, `testcreds/ee/client.crt`, `testcreds/ee/client.key` |
+| `DANECLIENT_LIVE_TA_NAME`, `_TA_CERT`, `_TA_KEY` | the DANE-TA name, `testcreds/ta/client.crt`, `testcreds/ta/client.key` |
+| `DANECLIENT_LIVE_TA_CHAIN` | PEM file with the CA certificate to send (`testcreds/ca/ca.crt`) |
 
 Each identity is optional: its test skips if its variables are unset.
 File paths must be absolute (hence `$PWD` below): `go test` runs the
@@ -89,10 +94,10 @@ tests from inside `daneauth/`, so relative paths resolve there.
 
     DANECLIENT_LIVE=1 DANECLIENT_LIVE_RESOLVER=127.0.0.1:53 \
     DANECLIENT_LIVE_EE_NAME=dev1._device.huque.com \
-    DANECLIENT_LIVE_EE_CERT=$PWD/ee/client.crt DANECLIENT_LIVE_EE_KEY=$PWD/ee/client.key \
+    DANECLIENT_LIVE_EE_CERT=$PWD/testcreds/ee/client.crt DANECLIENT_LIVE_EE_KEY=$PWD/testcreds/ee/client.key \
     DANECLIENT_LIVE_TA_NAME=dev1.dane-test.huque.com \
-    DANECLIENT_LIVE_TA_CERT=$PWD/ta/client.crt DANECLIENT_LIVE_TA_KEY=$PWD/ta/client.key \
-    DANECLIENT_LIVE_TA_CHAIN=$PWD/ca/ca.crt \
+    DANECLIENT_LIVE_TA_CERT=$PWD/testcreds/ta/client.crt DANECLIENT_LIVE_TA_KEY=$PWD/testcreds/ta/client.key \
+    DANECLIENT_LIVE_TA_CHAIN=$PWD/testcreds/ca/ca.crt \
     go test ./daneauth/ -run Live -v
 
 Expected: `TestLiveDANEEE` and `TestLiveDANETA` pass, with a logged
@@ -105,7 +110,7 @@ fresh key and passes when the client sees TLS alert 40
 Start the server (here the resolver is local; `-v` logs each
 verification step):
 
-    daneserver -listen 127.0.0.1:8443 -cert server.crt -key server.key \
+    daneserver -listen 127.0.0.1:8443 -cert testcreds/server.crt -key testcreds/server.key \
       -resolver 127.0.0.1:53 -v
 
 Routes: `/` (plain text status), `/whoami` (JSON detail of the
@@ -113,13 +118,13 @@ authentication result) and `/private` (403 unless DANE-authenticated).
 
 Client, DANE-EE:
 
-    daneclient -cafile server.crt -cert ee/client.crt -key ee/client.key \
+    daneclient -cafile testcreds/server.crt -cert testcreds/ee/client.crt -key testcreds/ee/client.key \
       -name dev1._device.huque.com https://localhost:8443/whoami
 
 Client, DANE-TA: send the leaf and CA in one chain file, since `-cert`
 takes a chain. `danecert issue` writes it as `chain.pem`:
 
-    daneclient -cafile server.crt -cert ta/chain.pem -key ta/client.key \
+    daneclient -cafile testcreds/server.crt -cert testcreds/ta/chain.pem -key testcreds/ta/client.key \
       -name dev1.dane-test.huque.com https://localhost:8443/whoami
 
 The client prints the TLS version, cipher suite, whether the server sent
@@ -157,7 +162,7 @@ the wire either way.
 ### Scenarios
 
 1. **Wrong key.** Generate a second identity for the same name, with
-   `-out ee2`, and do not publish its record. Connect with it. Expect
+   `-out testcreds/ee2`, and do not publish its record. Connect with it. Expect
    alert 40 and `no matching tlsa` in the server log.
 2. **Optional vs Required.** Restart the server with `-policy optional`.
    A client with no certificate, or whose DANE check fails, now completes

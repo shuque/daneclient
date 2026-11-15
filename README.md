@@ -117,7 +117,7 @@ TLSA records through a real validating resolver. They are skipped unless
 
     DANECLIENT_LIVE=1 DANECLIENT_LIVE_RESOLVER=127.0.0.1:53 \
     DANECLIENT_LIVE_EE_NAME=dev1._device.example.com \
-    DANECLIENT_LIVE_EE_CERT=$PWD/ee/client.crt DANECLIENT_LIVE_EE_KEY=$PWD/ee/client.key \
+    DANECLIENT_LIVE_EE_CERT=$PWD/testcreds/ee/client.crt DANECLIENT_LIVE_EE_KEY=$PWD/testcreds/ee/client.key \
     go test ./daneauth/ -run Live -v
 
 See [docs/testing.md](docs/testing.md#3-live-go-tests) for the full list
@@ -147,7 +147,7 @@ The subcommands:
   writes `client.key` and `client.crt`, and prints a `3 1 1` record
   (SHA-256 of the public key):
 
-      $ danecert ee -name dev1._device.example.com -out ee
+      $ danecert ee -name dev1._device.example.com -out testcreds/ee
       dev1._device.example.com. IN TLSA 3 1 1 <hex>
 
 - **`ca`** then **`issue`** make a private CA and a client certificate
@@ -158,8 +158,8 @@ The subcommands:
     followed by the CA). It prints a `2 0 1` record, the SHA-256 of the
     CA certificate.
 
-      $ danecert ca -cn "Test Client CA" -out ca
-      $ danecert issue -ca ca -name dev1.dane-test.example.com -out ta
+      $ danecert ca -cn "Test Client CA" -out testcreds/ca
+      $ danecert issue -ca testcreds/ca -name dev1.dane-test.example.com -out testcreds/ta
       dev1.dane-test.example.com. IN TLSA 2 0 1 <hex>
 
   - By default `issue` refuses a ClientName with an underscore label.
@@ -167,7 +167,8 @@ The subcommands:
     10). Pass `-allow-underscore` to override this for a private CA, or
     use a name without underscores.
 
-Keys are PKCS#8 PEM with mode 0600. Existing files are never overwritten
+Keys are PKCS#8 PEM with mode 0600. The examples put everything under
+`testcreds/`, which is gitignored. Existing files are never overwritten
 unless you pass `-force`.
 
 Add the printed record to your signed zone. Then check that your
@@ -177,7 +178,7 @@ resolver returns it with the `ad` flag set:
 
 ### `daneserver`: HTTPS server
 
-    daneserver -cert server.crt -key server.key -resolver 127.0.0.1:53 -v
+    daneserver -cert testcreds/server.crt -key testcreds/server.key -resolver 127.0.0.1:53 -v
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -203,18 +204,19 @@ It serves three routes:
 
 For a throwaway server certificate:
 
+    mkdir -p testcreds
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
-      -keyout server.key -out server.crt -subj /CN=localhost -days 30 \
+      -keyout testcreds/server.key -out testcreds/server.crt -subj /CN=localhost -days 30 \
       -addext subjectAltName=DNS:localhost
 
 ### `daneclient`: HTTPS client
 
     # DANE-EE
-    daneclient -cafile server.crt -cert ee/client.crt -key ee/client.key \
+    daneclient -cafile testcreds/server.crt -cert testcreds/ee/client.crt -key testcreds/ee/client.key \
       -name dev1._device.example.com https://localhost:8443/whoami
 
     # DANE-TA: send the chain, leaf followed by CA
-    daneclient -cafile server.crt -cert ta/chain.pem -key ta/client.key \
+    daneclient -cafile testcreds/server.crt -cert testcreds/ta/chain.pem -key testcreds/ta/client.key \
       -name dev1.dane-test.example.com https://localhost:8443/whoami
 
 | Flag | Default | Meaning |
@@ -249,7 +251,7 @@ handshake before the server has checked the client's certificate.
         "github.com/shuque/daneclient/tls"
     )
 
-    cert, err := tls.LoadX509KeyPair("server.crt", "server.key")
+    cert, err := tls.LoadX509KeyPair("testcreds/server.crt", "testcreds/server.key")
     // ...
     srv, err := daneauth.NewServer(daneauth.ServerOptions{
         Certificates: []tls.Certificate{cert},
@@ -286,7 +288,7 @@ Points to know:
 
 ### Client
 
-    cert, err := tls.LoadX509KeyPair("ee/client.crt", "ee/client.key")
+    cert, err := tls.LoadX509KeyPair("testcreds/ee/client.crt", "testcreds/ee/client.key")
     // ...
     cfg, err := daneauth.ClientConfig(daneauth.ClientOptions{
         Certificate: &cert,
