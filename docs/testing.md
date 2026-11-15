@@ -83,14 +83,16 @@ touch no network, unless `DANECLIENT_LIVE=1`.
 | `DANECLIENT_LIVE_TA_CHAIN` | PEM file with the CA certificate to send (`ca/ca.crt`) |
 
 Each identity is optional: its test skips if its variables are unset.
+File paths must be absolute (hence `$PWD` below): `go test` runs the
+tests from inside `daneauth/`, so relative paths resolve there.
 `TestLiveWrongKey` needs only the resolver and `EE_NAME`.
 
     DANECLIENT_LIVE=1 DANECLIENT_LIVE_RESOLVER=127.0.0.1:53 \
     DANECLIENT_LIVE_EE_NAME=dev1._device.huque.com \
-    DANECLIENT_LIVE_EE_CERT=ee/client.crt DANECLIENT_LIVE_EE_KEY=ee/client.key \
+    DANECLIENT_LIVE_EE_CERT=$PWD/ee/client.crt DANECLIENT_LIVE_EE_KEY=$PWD/ee/client.key \
     DANECLIENT_LIVE_TA_NAME=dev1.dane-test.huque.com \
-    DANECLIENT_LIVE_TA_CERT=ta/client.crt DANECLIENT_LIVE_TA_KEY=ta/client.key \
-    DANECLIENT_LIVE_TA_CHAIN=ca/ca.crt \
+    DANECLIENT_LIVE_TA_CERT=$PWD/ta/client.crt DANECLIENT_LIVE_TA_KEY=$PWD/ta/client.key \
+    DANECLIENT_LIVE_TA_CHAIN=$PWD/ca/ca.crt \
     go test ./daneauth/ -run Live -v
 
 Expected: `TestLiveDANEEE` and `TestLiveDANETA` pass, with a logged

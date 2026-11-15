@@ -117,7 +117,7 @@ TLSA records through a real validating resolver. They are skipped unless
 
     DANECLIENT_LIVE=1 DANECLIENT_LIVE_RESOLVER=127.0.0.1:53 \
     DANECLIENT_LIVE_EE_NAME=dev1._device.example.com \
-    DANECLIENT_LIVE_EE_CERT=ee/client.crt DANECLIENT_LIVE_EE_KEY=ee/client.key \
+    DANECLIENT_LIVE_EE_CERT=$PWD/ee/client.crt DANECLIENT_LIVE_EE_KEY=$PWD/ee/client.key \
     go test ./daneauth/ -run Live -v
 
 See [docs/testing.md](docs/testing.md#3-live-go-tests) for the full list
