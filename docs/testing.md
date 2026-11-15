@@ -17,8 +17,8 @@ publish under.
 
       go build -o /tmp/dc/ ./cmd/danecert ./cmd/daneserver ./cmd/daneclient
 
-  This needs the `dane` repo checked out next to this one, on its `v2`
-  branch (see the README).
+  This needs the `dane` repo checked out next to this one (see the
+  README).
 - A TLS certificate for the demo server. The client authenticates it with
   PKIX by default, so for a throwaway server make a self-signed one and
   pass it to the client with `-cafile`:

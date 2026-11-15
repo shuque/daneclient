@@ -69,7 +69,8 @@ Scope and limits:
   against certificate chains.
   - Until `v2.0.0` is tagged, `go.mod` contains
     `replace github.com/shuque/dane/v2 => ../dane/v2`. You need the
-    `dane` repository checked out next to this one, on its `v2` branch.
+    `dane` repository checked out next to this one (its `master` branch
+    contains the `v2/` module).
 - **[github.com/miekg/dns](https://github.com/miekg/dns)**,
   **golang.org/x/crypto** and **golang.org/x/sys**. These are fetched
   automatically by `go build`.
@@ -86,7 +87,6 @@ Clone this repository and the `dane` repository side by side:
 
     git clone https://github.com/shuque/daneclient
     git clone https://github.com/shuque/dane
-    git -C dane checkout v2
     cd daneclient
 
 Build everything, and put the three programs in `bin/`:
